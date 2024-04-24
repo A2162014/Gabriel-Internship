@@ -1,14 +1,63 @@
+from maps import *
+from components.wpopup import *
+
+from math import floor
+
 import matplotlib.pyplot as plt
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import (QTableWidgetItem, QWidget, QAbstractItemView, QTableWidget,
-                             QHBoxLayout, QSizePolicy, QHeaderView, QSpacerItem)
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
-from components.wpopup import *
-from maps import area_line_map_statistics, time_availability
+from PyQt5.QtCore import Qt, QPoint
+from PyQt5.QtGui import QPixmap, QPainter
+from PyQt5.QtWidgets import (QTableWidgetItem, QWidget, QAbstractItemView, QTableWidget,
+                             QHBoxLayout, QSizePolicy, QHeaderView, QSpacerItem, QFileDialog)
 
 
-def add_widgets_to_scroll_area(scroll_area, table, df, num_working_days):
+def get_area_for_line(line):
+    for area, lines in area_line_map_table.items():
+        if line in lines:
+            return area
+    return None
+
+
+def save_statistics(scroll_area, tables, barcharts):
+    # Get the directory and filename where the user wants to save the merged image
+    file_path, _ = QFileDialog.getSaveFileName(None, "Save Merged Image", "", "PNG (*.png)")
+    if not file_path:
+        return  # User canceled the dialog
+
+    # Create the merged image with the exact height of the content
+    merged_image = QPixmap(scroll_area.viewport().size().width(), 3300)
+    merged_image.fill(Qt.white)  # Fill the pixmap with white background
+
+    painter = QPainter(merged_image)
+    painter.begin(merged_image)
+
+    # Initialize the y-coordinate for drawing content
+    y_offset = 0
+
+    # Draw tables onto the merged image
+    for table_widget in tables:
+        table_pixmap = QPixmap(table_widget.size())
+        table_widget.render(table_pixmap)
+        table_pos = table_widget.mapTo(scroll_area.viewport(), QPoint(0, 0))
+        painter.drawPixmap(table_pos, table_pixmap)
+        y_offset += table_widget.height()
+
+    # Draw bar charts onto the merged image
+    for bar_chart_widget in barcharts:
+        bar_chart_pixmap = QPixmap(bar_chart_widget.size())
+        bar_chart_widget.render(bar_chart_pixmap)
+        bar_chart_pos = bar_chart_widget.mapTo(scroll_area.viewport(), QPoint(0, 0))
+        painter.drawPixmap(bar_chart_pos, bar_chart_pixmap)
+        y_offset += bar_chart_widget.height()
+
+    painter.end()
+
+    # Save the merged image
+    merged_image.save(file_path)
+
+
+def add_widgets_to_scroll_area(scroll_area, file_name, df, num_working_days):
     # Create a widget to contain all the widgets vertically
     scroll_content_widget1 = QWidget()
     scroll_layout1 = QVBoxLayout(scroll_content_widget1)
@@ -22,7 +71,7 @@ def add_widgets_to_scroll_area(scroll_area, table, df, num_working_days):
     # Calculate the sum of total time for each category
     sums = {}
     avail_time_sums = {}
-    for category, keywords in area_line_map_statistics.items():
+    for category, keywords in area_line_map_table.items():
         total_sum = df[df["LINE"].isin(keywords)]["TOTAL TIME"].sum()
         sums[category] = total_sum
         avail_time_sum = sum(
@@ -41,10 +90,11 @@ def add_widgets_to_scroll_area(scroll_area, table, df, num_working_days):
 
     # Add the existing table to the layout
     table_widget1 = QTableWidget(5, 3)  # 5 rows, 3 columns
-    table_widget1.setHorizontalHeaderLabels(["Location", "% of B/D", "Target in %"])
+    table_widget1.setHorizontalHeaderLabels(
+        ["Location", f"% of B/D in {file_name.text().split('.')[0]}", "Target in %"])
     table_widget1.setEditTriggers(QAbstractItemView.NoEditTriggers)  # Make the table non-editable
     table_widget1.setFixedHeight(185)
-    table_widget1.setFixedWidth(400)
+    table_widget1.setFixedWidth(600)
 
     # Remove the outer box of the table
     table_widget1.setStyleSheet('''
@@ -54,7 +104,7 @@ def add_widgets_to_scroll_area(scroll_area, table, df, num_working_days):
     ''')
 
     targets = [1 for _ in range(5)]  # The Target is set to 1% for each row
-    locations1 = ["Overall Plant"] + list(bd_time_percentages.keys())
+    locations1 = ["Overall Plant"] + area_stats_header
     percentages1 = [overall_plant_bd_time_percentage] + list(bd_time_percentages.values())
     for i, (location1, percent1, target) in enumerate(zip(locations1, percentages1, targets)):
         item_location = QTableWidgetItem(location1)
@@ -86,14 +136,14 @@ def add_widgets_to_scroll_area(scroll_area, table, df, num_working_days):
     # Add the existing graph to the layout
     fig, ax = plt.subplots()
     ax.bar(locations1, percentages1)
-    ax.set_title('% of B/D')
+    ax.set_title(f"% of B/D in {file_name.text().split('.')[0]}")
     ax.axhline(y=1, color='r', linestyle='-')  # Add a red-dashed line at y=1%
     ax.yaxis.grid(True)
     ax.xaxis.grid(False)  # Hide the grid lines along the x-axis
 
     # Set the y-axis limit to the maximum value plus 2
     max_value = max(percentages1) if percentages1 else 0
-    ax.set_ylim([0, max_value + 1.25])
+    ax.set_ylim([0, max_value + 1.20])
 
     # Display values above the bars
     for bar in ax.patches:
@@ -110,19 +160,21 @@ def add_widgets_to_scroll_area(scroll_area, table, df, num_working_days):
     scroll_layout1.addWidget(widgets_widget1)
 
     # No. Of occurrences.
-    widgets_widget7 = QWidget()
-    widgets_layout7 = QHBoxLayout(widgets_widget7)
-    widgets_layout7.setAlignment(Qt.AlignCenter)
+    widgets_widget2 = QWidget()
+    widgets_layout2 = QHBoxLayout(widgets_widget2)
+    widgets_layout2.setAlignment(Qt.AlignCenter)
 
-    counts = {category: 0 for category in area_line_map_statistics}
+    counts = {category: 0 for category in area_line_map_table}
     overall_plant_count = 0
 
-    for i in range(table.rowCount()):
-        item = table.item(i, 7)
-        if item is not None:  # Check if the item exists
-            line = item.text()
-            for category, keywords in area_line_map_statistics.items():
+    for index, row in df.iterrows():
+        line = row["LINE"]  # Assuming the relevant column is always at index 7
+        total_time = row["TOTAL TIME"]  # Assuming the column name for total time is "TOTAL TIME"
+        if total_time > 0:
+            for category, keywords in area_line_map_table.items():
                 if any(keyword in line for keyword in keywords):
+                    if line not in keywords:  # Check if the line is not in the list of keywords
+                        continue  # Skip this line if it's not in the list of keywords
                     counts[category] += 1
                     overall_plant_count += 1
 
@@ -133,16 +185,18 @@ def add_widgets_to_scroll_area(scroll_area, table, df, num_working_days):
 
     # Add the existing table to the layout
     table_widget2 = QTableWidget(5, 2)  # 5 rows, 3 columns
-    table_widget2.setHorizontalHeaderLabels(["Location", "No of Occurrence"])
+    table_widget2.setHorizontalHeaderLabels(["Location", f"No of Occurrence in {file_name.text().split('.')[0]}"])
     table_widget2.setEditTriggers(QAbstractItemView.NoEditTriggers)  # Make the table non-editable
     table_widget2.setFixedHeight(185)
-    table_widget2.setFixedWidth(400)
+    table_widget2.setFixedWidth(550)
 
     # Remove the outer box of the table
     table_widget2.setStyleSheet("QTableWidget { border: none; }")
 
-    for i, (locations2, occur) in enumerate(counts_ordered.items()):
-        item_location = QTableWidgetItem(locations2)
+    locations2 = ["Overall Plant"] + area_stats_header
+    occurrences = list(counts_ordered.values())
+    for i, (location2, occur) in enumerate(zip(locations2, occurrences)):
+        item_location = QTableWidgetItem(location2)
         item_location.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)  # Make the item selectable and enabled
         item_location.setTextAlignment(Qt.AlignCenter)  # Align text to center
         table_widget2.setItem(i, 0, item_location)
@@ -158,21 +212,23 @@ def add_widgets_to_scroll_area(scroll_area, table, df, num_working_days):
     table_widget2.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)  # Allow horizontal stretching
     table_widget2.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # Disable vertical scroll bar
 
-    widgets_layout7.addWidget(table_widget2)
+    widgets_layout2.addWidget(table_widget2)
 
     # Add the existing widgets to the scroll layout
-    scroll_layout1.addWidget(widgets_widget7)
+    scroll_layout1.addWidget(widgets_widget2)
 
     # MTBF in Day's
-    widgets_widget2 = QWidget()
-    widgets_layout2 = QHBoxLayout(widgets_widget2)
+    widgets_widget3 = QWidget()
+    widgets_layout3 = QHBoxLayout(widgets_widget3)
+    widgets_layout3.setAlignment(Qt.AlignCenter)
 
     # Calculate MTBF for each category
     mtbf = {}
     for category, total_sum in sums.items():
         # Calculate MTBF, handling division by zero (if count is zero)
         denominator = counts_ordered.get(category, 1)
-        mtbf_val = (((avail_time_sums[category] * num_working_days) - total_sum) / denominator) / (60 * 24)
+        mtbf_val = (((avail_time_sums[category] * num_working_days) - total_sum) / denominator) / (
+                60 * 24) if denominator != 0 else 0
         mtbf[category] = mtbf_val if denominator != 0 else 0
 
     # Calculate MTBF for the overall plant, handling division by zero (if count is zero)
@@ -183,276 +239,468 @@ def add_widgets_to_scroll_area(scroll_area, table, df, num_working_days):
     # Replace infinite values with 0
     overall_plant_mtbf = overall_plant_mtbf if overall_plant_denominator != 0 else 0
 
-    # Add a new table below the existing widgets
+    # Add the existing table to the layout
     table_widget3 = QTableWidget(5, 3)  # 5 rows, 3 columns
-    table_widget3.setHorizontalHeaderLabels(["Location", "MTBF", "Target in Day's"])
+    table_widget3.setHorizontalHeaderLabels(
+        ["Location", f"MTBF in {file_name.text().split('.')[0]}", "Target in Day's"])
     table_widget3.setEditTriggers(QAbstractItemView.NoEditTriggers)  # Make the table non-editable
-    table_widget3.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)  # Set vertical policy to Fixed
-    table_widget3.setMinimumSize(402, 235)  # Set the fixed width and height for the table
-    locations3 = ["Overall Plant"] + list(mtbf.keys())
-    mtbf_values = [overall_plant_mtbf] + list(mtbf.values())
-    targets2 = [1 for _ in range(5)]  # Example targets in days
-    for i, (location3, mtbf, target2) in enumerate(zip(locations3, mtbf_values, targets2)):
-        table_widget3.setItem(i, 0, QTableWidgetItem(location3))
-        table_widget3.setItem(i, 1, QTableWidgetItem(f"{mtbf:.2f}"))
-        table_widget3.setItem(i, 2, QTableWidgetItem(str(target2)))  # Set the target in days
+    table_widget3.setFixedHeight(185)
+    table_widget3.setFixedWidth(600)
 
-    widgets_layout2.addWidget(table_widget3)
+    # Remove the outer box of the table
+    table_widget3.setStyleSheet('''
+        QTableWidget { 
+            border: none; 
+        }
+    ''')
 
-    # Add some spacing between the tables
-    scroll_layout1.addSpacing(20)
+    targets2 = [1 for _ in range(5)]  # The Target is set to 1% for each row
+    locations3 = ["Overall Plant"] + area_stats_header
+    mttr_values = [overall_plant_mtbf] + list(mtbf.values())
+    for i, (location3, mttr, target2) in enumerate(zip(locations3, mttr_values, targets2)):
+        item_location = QTableWidgetItem(location3)
+        item_location.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)  # Make the item selectable and enabled
+        item_location.setTextAlignment(Qt.AlignCenter)  # Align text to top-left
+        table_widget3.setItem(i, 0, item_location)
 
-    # Add bar chart for MTBF below the tables
+        item_percent = QTableWidgetItem(f"{mttr:.2f}")
+        item_percent.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)  # Make the item selectable and enabled
+        item_percent.setTextAlignment(Qt.AlignCenter)  # Align text to top-left
+        table_widget3.setItem(i, 1, item_percent)
+
+        item_target = QTableWidgetItem(str(target2))
+        item_target.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)  # Make the item selectable and enabled
+        item_target.setTextAlignment(Qt.AlignCenter)  # Align text to top-left
+        table_widget3.setItem(i, 2, item_target)
+
+    # Enable word wrap
+    table_widget3.resizeRowsToContents()
+    table_widget3.resizeColumnsToContents()
+    table_widget3.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)  # Allow horizontal stretching
+    table_widget3.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # Disable vertical scroll bar
+
+    widgets_layout3.addWidget(table_widget3)
+
+    spacer = QSpacerItem(60, 20)  # width, height
+    widgets_layout3.addItem(spacer)
+
+    # Add the existing graph to the layout
     fig2, ax2 = plt.subplots()
-    ax2.bar(locations3, mtbf_values)
-    ax2.set_title('MTBF in Days')
-    fig2.tight_layout()
-
-    # Find the maximum value of mtbf_values
-    max_mtbf_value = max(mtbf_values)
-
-    # Set the y-axis limit with a gap of 100 above the maximum value
-    ax2.set_ylim([0, max_mtbf_value + 100])
-
-    # Draw a red line at y=1
-    ax2.axhline(y=1, color='red', linestyle='-')
-
-    # Add grid lines
+    ax2.bar(locations3, mttr_values)
+    ax2.set_title(f"MTBF in Days - {file_name.text().split('.')[0]}")
+    ax2.axhline(y=1, color='r', linestyle='-')  # Add a red-dashed line at y=1%
     ax2.yaxis.grid(True)
     ax2.xaxis.grid(False)  # Hide the grid lines along the x-axis
 
+    # Set the y-axis limit to the maximum value plus 2
+    max_value2 = max(mttr_values) if mttr_values else 0
+    ax2.set_ylim([0, floor(max_value2 + 30)])
+
     # Display values above the bars
     for bar2 in ax2.patches:
-        ax2.text(bar2.get_x() + bar2.get_width() / 2, bar2.get_height() + 0.02, round(bar2.get_height(), 2),
+        ax2.text(bar2.get_x() + bar2.get_width() / 2, bar2.get_height(), round(bar2.get_height(), 2),
                  ha='center', va='bottom')
     fig2.tight_layout()
 
     # Embed the Matplotlib figure in a QWidget
     bar_chart_widget2 = FigureCanvas(fig2)
     bar_chart_widget2.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)  # Set vertical policy to Fixed
-    bar_chart_widget2.setMinimumSize(750, 325)  # Set the fixed width and height for the Matplotlib widget
-    widgets_layout2.addWidget(bar_chart_widget2)
+    widgets_layout3.addWidget(bar_chart_widget2)
 
-    scroll_layout1.addWidget(widgets_widget2)
+    # Add the existing widgets to the scroll layout
+    scroll_layout1.addWidget(widgets_widget3)
 
     # MTTR in Mins
-    widgets_widget3 = QWidget()
-    widgets_layout3 = QHBoxLayout(widgets_widget3)
+    widgets_widget4 = QWidget()
+    widgets_layout4 = QHBoxLayout(widgets_widget4)
+    widgets_layout4.setAlignment(Qt.AlignCenter)
 
-    # Add a new table below the existing widgets
+    # Calculate MTTR for each category
+    mttr = {}
+    for category, total_sum in sums.items():
+        if counts[category] != 0:
+            mttr[category] = total_sum / counts[category]
+        else:
+            mttr[category] = 0
+
+    # Calculate MTTR for overall plant
+    overall_plant_mttr = sum(sums.values()) / overall_plant_count if overall_plant_count != 0 else 0
+
+    # Add the existing table to the layout
     table_widget4 = QTableWidget(5, 3)  # 5 rows, 3 columns
-    table_widget4.setHorizontalHeaderLabels(["Location", "MTTR", "Target in Min's"])
+    table_widget4.setHorizontalHeaderLabels(
+        ["Location", f"MTTR in {file_name.text().split('.')[0]}", "TTarget in Min's"])
     table_widget4.setEditTriggers(QAbstractItemView.NoEditTriggers)  # Make the table non-editable
-    table_widget4.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)  # Set vertical policy to Fixed
-    table_widget4.setMinimumSize(402, 235)  # Set the fixed width and height for the table
-    locations4 = ["Overall Plant", "Shox DA & FA", "FF FA", "OT Cell", "IT GRD"]
-    mttr_values = [11.80, 12.60, 11.00, 12.50, 0]  # Example MTBF values
-    targets3 = [30 for _ in range(5)]  # Example targets in days
-    for i, (location4, mttr, target3) in enumerate(zip(locations4, mttr_values, targets3)):
-        table_widget4.setItem(i, 0, QTableWidgetItem(location4))
-        table_widget4.setItem(i, 1, QTableWidgetItem(str(mttr)))
-        table_widget4.setItem(i, 2, QTableWidgetItem(str(target3)))  # Set the target in days
+    table_widget4.setFixedHeight(185)
+    table_widget4.setFixedWidth(600)
 
-    widgets_layout3.addWidget(table_widget4)
+    # Remove the outer box of the table
+    table_widget4.setStyleSheet('''
+        QTableWidget { 
+            border: none; 
+        }
+    ''')
 
-    # Add some spacing between the tables
-    scroll_layout1.addSpacing(20)
+    targets3 = [30 for _ in range(5)]  # The Target is set to 1% for each row
+    locations4 = ["Overall Plant"] + area_stats_header
+    mtbf_values = [overall_plant_mttr] + list(mttr.values())
+    for i, (location4, mtbf_val, target3) in enumerate(zip(locations4, mtbf_values, targets3)):
+        item_location = QTableWidgetItem(location4)
+        item_location.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)  # Make the item selectable and enabled
+        item_location.setTextAlignment(Qt.AlignCenter)  # Align text to top-left
+        table_widget4.setItem(i, 0, item_location)
 
-    # Add bar chart for MTBF below the tables
+        item_percent = QTableWidgetItem(f"{mtbf_val:.2f}")
+        item_percent.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)  # Make the item selectable and enabled
+        item_percent.setTextAlignment(Qt.AlignCenter)  # Align text to top-left
+        table_widget4.setItem(i, 1, item_percent)
+
+        item_target = QTableWidgetItem(str(target3))
+        item_target.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)  # Make the item selectable and enabled
+        item_target.setTextAlignment(Qt.AlignCenter)  # Align text to top-left
+        table_widget4.setItem(i, 2, item_target)
+
+    # Enable word wrap
+    table_widget4.resizeRowsToContents()
+    table_widget4.resizeColumnsToContents()
+    table_widget4.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)  # Allow horizontal stretching
+    table_widget4.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # Disable vertical scroll bar
+
+    widgets_layout4.addWidget(table_widget4)
+
+    spacer = QSpacerItem(60, 20)  # width, height
+    widgets_layout4.addItem(spacer)
+
+    # Add the existing graph to the layout
     fig3, ax3 = plt.subplots()
-    ax3.bar(locations3, mttr_values)
-    ax3.set_title('MTTR in Mins')
-    fig3.tight_layout()
-
-    # Set the y-axis limit to 160 days
-    ax3.set_ylim([0, 35])
-
-    # Draw a red line at y=1
-    ax3.axhline(y=30, color='red', linestyle='-')
-
-    # Add grid lines
+    ax3.bar(locations4, mtbf_values)
+    ax3.set_title(f"MTTR in Mins - {file_name.text().split('.')[0]}")
+    ax3.axhline(y=30, color='r', linestyle='-')  # Add a red-dashed line at y=1%
     ax3.yaxis.grid(True)
     ax3.xaxis.grid(False)  # Hide the grid lines along the x-axis
 
+    # Set the y-axis limit to the maximum value plus 2
+    max_value3 = max(mtbf_values) if mtbf_values else 0
+    ax3.set_ylim([0, floor(max_value3 + 35)])
+
     # Display values above the bars
     for bar3 in ax3.patches:
-        ax3.text(bar3.get_x() + bar3.get_width() / 2, bar3.get_height() + 0.02, round(bar3.get_height(), 2),
+        ax3.text(bar3.get_x() + bar3.get_width() / 2, bar3.get_height(), round(bar3.get_height(), 2),
                  ha='center', va='bottom')
     fig3.tight_layout()
 
     # Embed the Matplotlib figure in a QWidget
     bar_chart_widget3 = FigureCanvas(fig3)
     bar_chart_widget3.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)  # Set vertical policy to Fixed
-    bar_chart_widget3.setMinimumSize(750, 325)  # Set the fixed width and height for the Matplotlib widget
-    widgets_layout3.addWidget(bar_chart_widget3)
+    widgets_layout4.addWidget(bar_chart_widget3)
 
-    scroll_layout1.addWidget(widgets_widget3)
+    # Add the existing widgets to the scroll layout
+    scroll_layout1.addWidget(widgets_widget4)
 
     # SX Damper & FA
-    widgets_widget4 = QWidget()
-    widgets_layout4 = QHBoxLayout(widgets_widget4)
+    widgets_widget5 = QWidget()
+    widgets_layout5 = QHBoxLayout(widgets_widget5)
+    widgets_layout5.setAlignment(Qt.AlignCenter)
 
-    # Add a new table below the existing widgets
-    table_widget5 = QTableWidget(13, 3)  # 13 rows, 3 columns
-    table_widget5.setHorizontalHeaderLabels(["Line", "% of B/D", "Target in %"])
+    # Filter lines based on the location "SHOX"
+    lines = area_line_map_table.get("SHOX", [])
+
+    bd_percentages = {}
+    for line in lines:
+        df_line = df[df['LINE'].str.contains(line, case=False)]
+
+        # Calculate sum of total time for line
+        line_total_sum = df_line[df_line['LINE'] == line]["TOTAL TIME"].sum()
+
+        # Get the availability time for the line
+        area = get_area_for_line(line)
+        line_avail_time = time_availability.get(area, {}).get(line, 0)
+
+        # Calculate B/D Time percentage for line
+        line_bd_time_percentage = (line_total_sum / (line_avail_time * num_working_days)) * 100
+        bd_percentages[line] = line_bd_time_percentage
+
+    # Add the existing table to the layout
+    table_widget5 = QTableWidget(13, 3)  # 5 rows, 3 columns
+    table_widget5.setHorizontalHeaderLabels(
+        ["Line", f"% of B/D in {file_name.text().split('.')[0]}", "Target in %"])
     table_widget5.setEditTriggers(QAbstractItemView.NoEditTriggers)  # Make the table non-editable
-    table_widget5.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)  # Set vertical policy to Fixed
-    table_widget5.setMinimumSize(402, 400)  # Set the fixed width and height for the table
-    lines1 = ["DA-1", "DA-2", "DA-3", "DA-4", "DA-5", "DA-7", "DA-9",
-              "DA-10", "DA-11", "Valve Assly", "SA-3", "SA-5", "Welding"]
-    percentages2 = [0.26, 0.08, 0.09, 0.00, 0.00, 0.14, 0.11, 0.00, 0.27, 0.73, 0.00, 0.00, 0.00]  # Example MTBF values
-    targets4 = [1 for _ in range(13)]  # Example targets in days
-    for i, (line1, percent2, target4) in enumerate(zip(lines1, percentages2, targets4)):
-        table_widget5.setItem(i, 0, QTableWidgetItem(line1))
-        table_widget5.setItem(i, 1, QTableWidgetItem(str(percent2)))
-        table_widget5.setItem(i, 2, QTableWidgetItem(str(target4)))  # Set the target in days
+    table_widget5.setFixedHeight(425)
+    table_widget5.setFixedWidth(600)
 
-    widgets_layout4.addWidget(table_widget5)
+    # Remove the outer box of the table
+    table_widget5.setStyleSheet('''
+        QTableWidget { 
+            border: none; 
+        }
+    ''')
 
-    # Add some spacing between the tables
-    scroll_layout1.addSpacing(20)
+    targets4 = [1 for _ in range(13)]  # The Target is set to 1% for each row
+    line1_bd_percs = list(bd_percentages.values())
+    for i, (line1_header, line1_bd_perc, target4) in enumerate(zip(lines1_stats_header, line1_bd_percs, targets4)):
+        item_location = QTableWidgetItem(line1_header)
+        item_location.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)  # Make the item selectable and enabled
+        item_location.setTextAlignment(Qt.AlignCenter)  # Align text to top-left
+        table_widget5.setItem(i, 0, item_location)
 
-    # Add bar chart for MTBF below the tables
+        item_percent = QTableWidgetItem(f"{line1_bd_perc:.2f}")
+        item_percent.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)  # Make the item selectable and enabled
+        item_percent.setTextAlignment(Qt.AlignCenter)  # Align text to top-left
+        table_widget5.setItem(i, 1, item_percent)
+
+        item_target = QTableWidgetItem(str(target4))
+        item_target.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)  # Make the item selectable and enabled
+        item_target.setTextAlignment(Qt.AlignCenter)  # Align text to top-left
+        table_widget5.setItem(i, 2, item_target)
+
+    # Enable word wrap
+    table_widget5.resizeRowsToContents()
+    table_widget5.resizeColumnsToContents()
+    table_widget5.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)  # Allow horizontal stretching
+    table_widget5.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # Disable vertical scroll bar
+
+    widgets_layout5.addWidget(table_widget5)
+
+    spacer = QSpacerItem(60, 20)  # width, height
+    widgets_layout5.addItem(spacer)
+
+    # Add the existing graph to the layout
     fig4, ax4 = plt.subplots()
-    ax4.bar(lines1, percentages2)
-    ax4.set_title('SX Damper & FA')
-    fig4.tight_layout()
-
-    # Rotate the x-axis labels
-    plt.xticks(rotation=45, ha='right')  # Rotate the labels by 45 degrees and align them to the right.
-
-    # Set the y-axis limit to 160 days
-    ax4.set_ylim([0, 35])
-
-    # Draw a red line at y=1
-    ax4.axhline(y=30, color='red', linestyle='-')
-
-    # Add grid lines
+    ax4.bar(lines1_stats_header, line1_bd_percs)
+    ax4.set_title(f"SX Damper & FA - {file_name.text().split('.')[0]}")
+    ax4.axhline(y=1, color='r', linestyle='-')  # Add a red-dashed line at y=1%
     ax4.yaxis.grid(True)
     ax4.xaxis.grid(False)  # Hide the grid lines along the x-axis
 
+    # Set the rotation angle for x-axis labels
+    ax4.set_xticks(range(len(lines1_stats_header)))  # Set the positions of the ticks
+    ax4.set_xticklabels(lines1_stats_header, rotation=45, ha='right')
+
+    # Set the y-axis limit to the maximum value plus 2
+    max_value4 = max(line1_bd_percs) if line1_bd_percs else 0
+    ax4.set_ylim([0, max_value4 + 1.20])
+
     # Display values above the bars
     for bar4 in ax4.patches:
-        ax4.text(bar4.get_x() + bar4.get_width() / 2, bar4.get_height() + 0.02, round(bar4.get_height(), 2),
+        ax4.text(bar4.get_x() + bar4.get_width() / 2, bar4.get_height(), round(bar4.get_height(), 2),
                  ha='center', va='bottom')
     fig4.tight_layout()
 
     # Embed the Matplotlib figure in a QWidget
     bar_chart_widget4 = FigureCanvas(fig4)
     bar_chart_widget4.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)  # Set vertical policy to Fixed
-    bar_chart_widget4.setMinimumSize(750, 325)  # Set the fixed width and height for the Matplotlib widget
-    widgets_layout4.addWidget(bar_chart_widget4)
+    widgets_layout5.addWidget(bar_chart_widget4)
 
-    scroll_layout1.addWidget(widgets_widget4)
+    # Add the existing widgets to the scroll layout
+    scroll_layout1.addWidget(widgets_widget5)
 
     # Front Fork Final Assembly
-    widgets_widget5 = QWidget()
-    widgets_layout5 = QHBoxLayout(widgets_widget5)
+    widgets_widget6 = QWidget()
+    widgets_layout6 = QHBoxLayout(widgets_widget6)
+    widgets_layout6.setAlignment(Qt.AlignCenter)
 
-    # Add a new table below the existing widgets
-    table_widget6 = QTableWidget(9, 3)  # 13 rows, 3 columns
-    table_widget6.setHorizontalHeaderLabels(["Line", "% of B/D", "Target in %"])
+    # Filter lines based on the location "SHOX"
+    lines1 = area_line_map_table.get("FFFA", [])
+
+    bd_percentages1 = {}
+    for line1 in lines1:
+        df_line1 = df[df['LINE'].str.contains(line1, case=False)]
+
+        # Calculate sum of total time for line
+        line_total_sum1 = df_line1[df_line1['LINE'] == line1]["TOTAL TIME"].sum()
+
+        # Get the availability time for the line
+        area1 = get_area_for_line(line1)
+        line_avail_time1 = time_availability.get(area1, {}).get(line1, 0)
+
+        # Calculate B/D Time percentage for line
+        line_bd_time_percentage1 = (line_total_sum1 / (line_avail_time1 * num_working_days)) * 100
+        bd_percentages1[line1] = line_bd_time_percentage1
+
+    # Add the existing table to the layout
+    table_widget6 = QTableWidget(9, 3)  # 5 rows, 3 columns
+    table_widget6.setHorizontalHeaderLabels(
+        ["Line", f"% of B/D in {file_name.text().split('.')[0]}", "Target in %"])
     table_widget6.setEditTriggers(QAbstractItemView.NoEditTriggers)  # Make the table non-editable
-    table_widget6.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)  # Set vertical policy to Fixed
-    table_widget6.setMinimumSize(402, 380)  # Set the fixed width and height for the table
-    lines2 = ["FA-1", "FA-2", "FA-3", "FA-4", "FA-5", "FA-6", "FA-7", "TFF", "TFF-2"]
-    percentages3 = [0.17, 0.43, 0.20, 0.06, 0.09, 0.26, 0.13, 0.06, 0.00]  # Example MTBF values
-    targets5 = [1 for _ in range(9)]  # Example targets in days
-    for i, (line2, percent3, target5) in enumerate(zip(lines2, percentages3, targets5)):
-        table_widget6.setItem(i, 0, QTableWidgetItem(line2))
-        table_widget6.setItem(i, 1, QTableWidgetItem(str(percent3)))
-        table_widget6.setItem(i, 2, QTableWidgetItem(str(target5)))  # Set the target in days
+    table_widget6.setFixedHeight(310)
+    table_widget6.setFixedWidth(600)
 
-    widgets_layout5.addWidget(table_widget6)
+    # Remove the outer box of the table
+    table_widget6.setStyleSheet('''
+        QTableWidget { 
+            border: none; 
+        }
+    ''')
 
-    # Add some spacing between the tables
-    scroll_layout1.addSpacing(20)
+    targets5 = [1 for _ in range(13)]  # The Target is set to 1% for each row
+    line2_bd_percs = list(bd_percentages1.values())
+    for i, (line2_header, line2_bd_perc, target5) in enumerate(zip(lines2_stats_header, line2_bd_percs, targets5)):
+        item_location = QTableWidgetItem(line2_header)
+        item_location.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)  # Make the item selectable and enabled
+        item_location.setTextAlignment(Qt.AlignCenter)  # Align text to top-left
+        table_widget6.setItem(i, 0, item_location)
 
+        item_percent = QTableWidgetItem(f"{line2_bd_perc:.2f}")
+        item_percent.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)  # Make the item selectable and enabled
+        item_percent.setTextAlignment(Qt.AlignCenter)  # Align text to top-left
+        table_widget6.setItem(i, 1, item_percent)
+
+        item_target = QTableWidgetItem(str(target5))
+        item_target.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)  # Make the item selectable and enabled
+        item_target.setTextAlignment(Qt.AlignCenter)  # Align text to top-left
+        table_widget6.setItem(i, 2, item_target)
+
+    # Enable word wrap
+    table_widget6.resizeRowsToContents()
+    table_widget6.resizeColumnsToContents()
+    table_widget6.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)  # Allow horizontal stretching
+    table_widget6.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # Disable vertical scroll bar
+
+    widgets_layout6.addWidget(table_widget6)
+
+    spacer = QSpacerItem(60, 20)  # width, height
+    widgets_layout6.addItem(spacer)
+
+    # Add the existing graph to the layout
     fig5, ax5 = plt.subplots()
-    ax5.bar(lines2, percentages3)
-    ax5.set_title('Front Fork Final Assembly')
-    fig5.tight_layout()
-
-    # Set the y-axis limit to 160 days
-    ax5.set_ylim([0, 1.20])
-
-    # Draw a red line at y=1
-    ax5.axhline(y=1, color='red', linestyle='-')
-
-    # Add grid lines
+    ax5.bar(lines2_stats_header, line2_bd_percs)
+    ax5.set_title(f"Front Fork Final Assembly - {file_name.text().split('.')[0]}")
+    ax5.axhline(y=1, color='r', linestyle='-')  # Add a red-dashed line at y=1%
     ax5.yaxis.grid(True)
     ax5.xaxis.grid(False)  # Hide the grid lines along the x-axis
 
+    # Set the rotation angle for x-axis labels
+    ax5.set_xticks(range(len(lines2_stats_header)))  # Set the positions of the ticks
+    ax5.set_xticklabels(lines2_stats_header, rotation=45, ha='right')
+
+    # Set the y-axis limit to the maximum value plus 2
+    max_value5 = max(line2_bd_percs) if line2_bd_percs else 0
+    ax5.set_ylim([0, max_value5 + 1.20])
+
     # Display values above the bars
     for bar5 in ax5.patches:
-        ax5.text(bar5.get_x() + bar5.get_width() / 2, bar5.get_height() + 0.02, round(bar5.get_height(), 2),
+        ax5.text(bar5.get_x() + bar5.get_width() / 2, bar5.get_height(), round(bar5.get_height(), 2),
                  ha='center', va='bottom')
     fig5.tight_layout()
 
     # Embed the Matplotlib figure in a QWidget
     bar_chart_widget5 = FigureCanvas(fig5)
     bar_chart_widget5.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)  # Set vertical policy to Fixed
-    bar_chart_widget5.setMinimumSize(750, 325)  # Set the fixed width and height for the Matplotlib widget
-    widgets_layout5.addWidget(bar_chart_widget5)
+    widgets_layout6.addWidget(bar_chart_widget5)
 
-    scroll_layout1.addWidget(widgets_widget5)
+    # Add the existing widgets to the scroll layout
+    scroll_layout1.addWidget(widgets_widget6)
 
-    # OT Cell & IT Grinding
-    widgets_widget6 = QWidget()
-    widgets_layout6 = QHBoxLayout(widgets_widget6)
+    # OT cell & IT Grinding
+    widgets_widget7 = QWidget()
+    widgets_layout7 = QHBoxLayout(widgets_widget7)
+    widgets_layout7.setAlignment(Qt.AlignCenter)
 
-    # Add a new table below the existing widgets
-    table_widget7 = QTableWidget(14, 3)  # 13 rows, 3 columns
-    table_widget7.setHorizontalHeaderLabels(["Line", "% of B/D", "Target in %"])
+    # Filter lines based on the locations "OT CELL" and "IT GRD"
+    lines2 = []
+    for location in ["OT CELL", "IT GRD"]:
+        lines2.extend(area_line_map_table.get(location, []))
+    print(f"lines {lines2}")
+
+    bd_percentages2 = {}
+    for line2 in lines2:
+        df_line2 = df[df['LINE'].str.contains(line2, case=False)]
+        print(f"df_line {df_line2}")
+
+        # Calculate sum of total time for line
+        line_total_sum2 = df_line2[df_line2['LINE'] == line2]["TOTAL TIME"].sum()
+        print(f"line_total_sum {line_total_sum2}")
+
+        # Get the availability time for the line
+        area2 = get_area_for_line(line2)
+        line_avail_time2 = time_availability.get(area2, {}).get(line2, 0)
+        print(f"line_avail_time {line_avail_time2}")
+
+        # Calculate B/D Time percentage for line
+        line_bd_time_percentage2 = (line_total_sum2 / (line_avail_time2 * num_working_days)) * 100
+        bd_percentages2[line2] = line_bd_time_percentage2
+
+    # Add the existing table to the layout
+    table_widget7 = QTableWidget(14, 3)  # 5 rows, 3 columns
+    table_widget7.setHorizontalHeaderLabels(
+        ["Line", f"% of B/D in {file_name.text().split('.')[0]}", "Target in %"])
     table_widget7.setEditTriggers(QAbstractItemView.NoEditTriggers)  # Make the table non-editable
-    table_widget7.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)  # Set vertical policy to Fixed
-    table_widget7.setMinimumSize(402, 380)  # Set the fixed width and height for the table
-    lines3 = ["Cell-1", "Cell-2", "Cell-3", "Cell-4", "Cell-5", "Cell-6", "Cell-7",
-              "Cell-8", "Cell-9", "Cell-10", "Cell-11", "Cell-12", "ITG-1", "ITG-2"]
-    percentages4 = [0.00, 0.00, 0.00, 0.00, 0.00, 0.00, 0.05, 0.00, 0.00, 0.03, 0.00, 0.00, 0.00,
-                    0.00]  # Example MTBF values
-    targets6 = [1.50 for _ in range(14)]  # Example targets in days
-    for i, (line3, percent4, target6) in enumerate(zip(lines3, percentages4, targets6)):
-        table_widget7.setItem(i, 0, QTableWidgetItem(line3))
-        table_widget7.setItem(i, 1, QTableWidgetItem(str(percent4)))
-        table_widget7.setItem(i, 2, QTableWidgetItem(str(target6)))  # Set the target in days
+    table_widget7.setFixedHeight(460)
+    table_widget7.setFixedWidth(600)
 
-    widgets_layout6.addWidget(table_widget7)
+    # Remove the outer box of the table
+    table_widget7.setStyleSheet('''
+        QTableWidget { 
+            border: none; 
+        }
+    ''')
 
-    # Add some spacing between the tables
-    scroll_layout1.addSpacing(20)
+    targets6 = [1.50 for _ in range(14)]  # The Target is set to 1% for each row
+    line34_bd_percs = list(bd_percentages2.values())
+    for i, (line34_header, line34_bd_perc, target6) in enumerate(zip(lines34_stats_header, line34_bd_percs, targets6)):
+        item_location = QTableWidgetItem(line34_header)
+        item_location.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)  # Make the item selectable and enabled
+        item_location.setTextAlignment(Qt.AlignCenter)  # Align text to top-left
+        table_widget7.setItem(i, 0, item_location)
 
+        item_percent = QTableWidgetItem(f"{line34_bd_perc:.2f}")
+        item_percent.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)  # Make the item selectable and enabled
+        item_percent.setTextAlignment(Qt.AlignCenter)  # Align text to top-left
+        table_widget7.setItem(i, 1, item_percent)
+
+        item_target = QTableWidgetItem(str(target6))
+        item_target.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)  # Make the item selectable and enabled
+        item_target.setTextAlignment(Qt.AlignCenter)  # Align text to top-left
+        table_widget7.setItem(i, 2, item_target)
+
+    # Enable word wrap
+    table_widget7.resizeRowsToContents()
+    table_widget7.resizeColumnsToContents()
+    table_widget7.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)  # Allow horizontal stretching
+    table_widget7.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # Disable vertical scroll bar
+
+    widgets_layout7.addWidget(table_widget7)
+
+    spacer = QSpacerItem(60, 20)  # width, height
+    widgets_layout7.addItem(spacer)
+
+    # Add the existing graph to the layout
     fig6, ax6 = plt.subplots()
-    ax6.bar(lines3, percentages4)
-    ax6.set_title('OT Cell & IT Grinding')
-    fig6.tight_layout()
-
-    # Rotate the x-axis labels
-    plt.xticks(rotation=45, ha='right')  # Rotate the labels by 45 degrees and align them to the right.
-
-    # Set the y-axis limit to 160 days
-    ax6.set_ylim([0, 1.20])
-
-    # Draw a red line at y=1
-    ax6.axhline(y=1, color='red', linestyle='-')
-
-    # Add grid lines
+    ax6.bar(lines34_stats_header, line34_bd_percs)
+    ax6.set_title(f"OT Cell & IT Grinding - {file_name.text().split('.')[0]}")
+    ax6.axhline(y=1.5, color='r', linestyle='-')  # Add a red-dashed line at y=1%
     ax6.yaxis.grid(True)
     ax6.xaxis.grid(False)  # Hide the grid lines along the x-axis
 
+    # Set the rotation angle for x-axis labels
+    ax6.set_xticks(range(len(lines34_stats_header)))  # Set the positions of the ticks
+    ax6.set_xticklabels(lines34_stats_header, rotation=45, ha='right')
+
+    # Set the y-axis limit to the maximum value plus 2
+    max_value6 = max(line34_bd_percs) if line34_bd_percs else 0
+    ax6.set_ylim([0, max_value6 + 1.7])
+
     # Display values above the bars
     for bar6 in ax6.patches:
-        ax6.text(bar6.get_x() + bar6.get_width() / 2, bar6.get_height() + 0.02, round(bar6.get_height(), 2),
+        ax6.text(bar6.get_x() + bar6.get_width() / 2, bar6.get_height(), round(bar6.get_height(), 2),
                  ha='center', va='bottom')
     fig6.tight_layout()
 
     # Embed the Matplotlib figure in a QWidget
     bar_chart_widget6 = FigureCanvas(fig6)
     bar_chart_widget6.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)  # Set vertical policy to Fixed
-    bar_chart_widget6.setMinimumSize(750, 325)  # Set the fixed width and height for the Matplotlib widget
-    widgets_layout6.addWidget(bar_chart_widget6)
+    widgets_layout7.addWidget(bar_chart_widget6)
 
-    scroll_layout1.addWidget(widgets_widget6)
+    # Add the existing widgets to the scroll layout
+    scroll_layout1.addWidget(widgets_widget7)
 
-    # Set the widget containing all the widgets to the scroll area.
+    # Set the scroll area's widget to the content widget
     scroll_area.setWidget(scroll_content_widget1)
+
+    # Add the existing tables to the 'tables' list
+    tables.extend(
+        [table_widget1, table_widget2, table_widget3, table_widget4, table_widget5, table_widget6, table_widget7])
+
+    # Add the existing bar charts to the 'barcharts' list
+    barcharts.extend([bar_chart_widget1, bar_chart_widget2, bar_chart_widget3,
+                      bar_chart_widget4, bar_chart_widget5, bar_chart_widget6])

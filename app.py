@@ -1,10 +1,13 @@
 import sys
 
-from PyQt5.QtWidgets import (QApplication, QTabWidget, QSplitter, QScrollArea, QTreeWidget, QTreeWidgetItem)
+from PyQt5.QtCore import QTimer
+from PyQt5.QtGui import QKeySequence
+from PyQt5.QtWidgets import (QApplication, QTabWidget, QSplitter, QScrollArea, QTreeWidget, QTreeWidgetItem, QShortcut)
 
-from components.cdelegate import CompleterDelegate
-from helpers.p1utils import *
 from styles import *
+from helpers.p1utils import *
+from maps import column_headers, tables, barcharts
+from components.cdelegate import CompleterDelegate
 
 
 class MainWindow(QWidget):
@@ -41,10 +44,9 @@ class MainWindow(QWidget):
         self.right_line_edit = QLineEdit()
         self.right_layout.addWidget(self.right_line_edit)
         self.table_widget = QTableWidget()
-        self.column_headers = ["Date", "Time", "AM/PM", "Closing Time", "AM/PM", "Total Time", "Area",
-                               "Line", "Machine", "Problem", "Status", "Incharge", "Corrective Action"]
-        self.table_widget.setColumnCount(len(self.column_headers))
-        self.table_widget.setHorizontalHeaderLabels(self.column_headers)
+
+        self.table_widget.setColumnCount(len(column_headers))
+        self.table_widget.setHorizontalHeaderLabels(column_headers)
         self.table_widget.setStyleSheet(tableStyle)
         self.right_layout.addWidget(self.table_widget)
 
@@ -75,8 +77,7 @@ class MainWindow(QWidget):
                                self.right_line_edit, self.tab_widget))
         self.open_button.setShortcut("Ctrl+O")
         self.new_button.clicked.connect(
-            lambda: new_table(self.tab3_scroll_area, self.table_widget,
-                              self.right_line_edit, self.tab_widget))
+            lambda: new_table(self.table_widget, self.right_line_edit, self.tab_widget))
         self.new_button.setShortcut("Ctrl+N")
         self.save_button.clicked.connect(lambda: save_table(self.table_widget))
         self.save_button.setShortcut("Ctrl+S")
@@ -84,6 +85,10 @@ class MainWindow(QWidget):
         self.button_layout.addWidget(self.open_button)
         self.button_layout.addWidget(self.new_button)
         self.right_layout.addLayout(self.button_layout)
+
+        # Add shortcut for copying cells (Ctrl + C)
+        copy_shortcut = QShortcut(QKeySequence.Copy, self)
+        copy_shortcut.activated.connect(self.copy_cells)
 
         self.right_widget = QWidget()
         self.right_widget.setLayout(self.right_layout)
@@ -175,29 +180,53 @@ class MainWindow(QWidget):
         self.scroll_content_widget = QWidget()
         self.scroll_content_layout = QVBoxLayout(self.scroll_content_widget)
 
-        # Add labels and line edits for the desired fields
+        # Create a widget to contain the content of the scroll area.
+        self.scroll_content_widget = QWidget()
+        self.scroll_content_layout = QVBoxLayout(self.scroll_content_widget)
+
+        # Create a horizontal layout for each label-line edit pair
+        area_layout = QHBoxLayout()
+        line_layout = QHBoxLayout()
+        machine_layout = QHBoxLayout()
+        problem_layout = QHBoxLayout()
+
+        # Create line edits for the desired fields
         self.area_label = QLabel("Area:")
-        self.area_value_label = QLabel()  # This will display the selected area from the tree widget
+        self.area_value_line_edit = QLineEdit()
+
         self.line_label = QLabel("Line:")
-        self.line_value_label = QLabel()  # This will display the selected line from the tree widget
+        self.line_value_line_edit = QLineEdit()
+
         self.machine_label = QLabel("Machine:")
         self.machine_line_edit = QLineEdit()
+
         self.problem_label = QLabel("Problem:")
         self.problem_line_edit = QLineEdit()
-        self.corrective_action_label = QLabel("Corrective Action:")
-        self.corrective_action_line_edit = QLineEdit()
 
-        # Add the widgets to the scroll content layout
-        self.scroll_content_layout.addWidget(self.area_label)
-        self.scroll_content_layout.addWidget(self.area_value_label)
-        self.scroll_content_layout.addWidget(self.line_label)
-        self.scroll_content_layout.addWidget(self.line_value_label)
-        self.scroll_content_layout.addWidget(self.machine_label)
-        self.scroll_content_layout.addWidget(self.machine_line_edit)
-        self.scroll_content_layout.addWidget(self.problem_label)
-        self.scroll_content_layout.addWidget(self.problem_line_edit)
-        self.scroll_content_layout.addWidget(self.corrective_action_label)
-        self.scroll_content_layout.addWidget(self.corrective_action_line_edit)
+        tab2_buttons_layout = QHBoxLayout()
+
+        # Create "UPDATE" and "REMOVE" buttons
+        self.update_button = QPushButton("UPDATE")
+        self.remove_button = QPushButton("REMOVE")
+
+        # Add labels, line edits, and buttons to the horizontal layouts
+        area_layout.addWidget(self.area_label)
+        area_layout.addWidget(self.area_value_line_edit)
+
+        line_layout.addWidget(self.line_label)
+        line_layout.addWidget(self.line_value_line_edit)
+
+        machine_layout.addWidget(self.machine_label)
+        machine_layout.addWidget(self.machine_line_edit)
+
+        problem_layout.addWidget(self.problem_label)
+        problem_layout.addWidget(self.problem_line_edit)
+
+        # Add the horizontal layouts to the scroll content layout
+        self.scroll_content_layout.addLayout(area_layout)
+        self.scroll_content_layout.addLayout(line_layout)
+        self.scroll_content_layout.addLayout(machine_layout)
+        self.scroll_content_layout.addLayout(problem_layout)
 
         # Set the content widget of the scroll area
         self.scroll_area_tab2.setWidget(self.scroll_content_widget)
@@ -210,8 +239,13 @@ class MainWindow(QWidget):
         self.tab2_horizontal_layout.setStretchFactor(self.tree_widget, 3)
         self.tab2_horizontal_layout.setStretchFactor(self.scroll_area_tab2, 7)
 
+        tab2_buttons_layout.addWidget(self.update_button)
+        tab2_buttons_layout.addWidget(self.remove_button)
+
         # Set the tab2_horizontal_layout as the layout for 'Tab 2'
         self.tab2_layout.addLayout(self.tab2_horizontal_layout)
+
+        self.tab2_layout.addLayout(tab2_buttons_layout)
 
         self.tab2_widget.setLayout(self.tab2_layout)
 
@@ -224,6 +258,9 @@ class MainWindow(QWidget):
 
         # Button for saving data
         self.save_button_tab3 = QPushButton("Save")
+        self.save_button_tab3.clicked.connect(self.scroll_to_top)
+        self.save_button_tab3.clicked.connect(lambda: save_statistics(self.tab3_scroll_area, tables, barcharts))
+        self.save_button_tab3.setShortcut("Ctrl+S")
 
         # Layout for buttons below the QTextEdit
         self.button_layout_tab3 = QHBoxLayout()
@@ -265,6 +302,34 @@ class MainWindow(QWidget):
 
         self.setLayout(self.layout)
 
+        self.table_widget.itemChanged.connect(self.check_and_clear_line_cell)
+
+    # Inside your MainWindow class, add a method to scroll the scroll area to the top
+    def scroll_to_top(self):
+        # Scroll the scroll area to the top
+        self.tab3_scroll_area.verticalScrollBar().setValue(0)
+
+    def keyPressEvent(self, event):
+        # Check if the key event is for Ctrl+V shortcut
+        if event.matches(QKeySequence.Paste):
+            # Display a pop-up message informing the user that pasting values is not allowed
+            QMessageBox.warning(self, "Paste Warning", "Pasting values into cells is not allowed.")
+            return
+
+        # Call the base class implementation for other key events
+        super().keyPressEvent(event)
+
+    def check_and_clear_line_cell(self, item):
+        # Get the column index of the edited item
+        col = item.column()
+
+        # Check if the edited cell is in the AREA column (index 6)
+        if col == 6:
+            # Clear the corresponding cell in the LINE column (index 7)
+            line_item = self.table_widget.item(item.row(), 7)
+            if line_item:
+                line_item.setText("")
+
     # Add a new method to your MainWindow class to handle the validation and adding new rows.
     def check_cell(self, item):
         # Get the current row and column of the edited item
@@ -300,8 +365,48 @@ class MainWindow(QWidget):
             # Get the text of the selected item (e.g., "DA-1", "FA-1", etc.)
             item_text = item.text(0)
             # Update the labels with the parent and item texts
-            self.area_value_label.setText(parent_text)
-            self.line_value_label.setText(item_text)
+            self.area_value_line_edit.setText(parent_text)
+            self.line_value_line_edit.setText(item_text)
+
+    def copy_cells(self):
+        # Get selected cells from the table widget
+        selected_indexes = self.table_widget.selectedIndexes()
+
+        if selected_indexes:
+            # Convert indexes to row-column pairs
+            selected_cells = [(index.row(), index.column()) for index in selected_indexes]
+            # Sort cells by row and column
+            selected_cells.sort()
+
+            # Check if the number of selected cells exceeds a certain threshold
+            max_cells = 1000  # Adjust this threshold as needed
+            if len(selected_cells) > max_cells:
+                # Display a popup message
+                QMessageBox.warning(self, "Copy Warning",
+                                    f"Copying {len(selected_cells)} cells may cause the application to freeze. "
+                                    f"Please try copying a smaller selection.")
+                return
+
+            # Initialize a string to hold copied data
+            copied_data = ""
+
+            # Iterate through selected cells
+            prev_row = selected_cells[0][0]
+            for row, col in selected_cells:
+                # Check if there is an item at the specified row and column
+                item = self.table_widget.item(row, col)
+                if item:
+                    if row != prev_row:
+                        copied_data += "\n"
+                        prev_row = row
+                    # Get text from each cell
+                    cell_text = item.text()
+                    # Append cell text to copied data
+                    copied_data += cell_text + "\t"  # Use tab as delimiter for columns
+
+            # Copy data to clipboard
+            clipboard = QApplication.clipboard()
+            clipboard.setText(copied_data)
 
     def closeEvent(self, event):
         if self.table_widget.rowCount() > 0:  # Check if the table is not empty
