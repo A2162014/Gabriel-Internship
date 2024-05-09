@@ -1,10 +1,11 @@
 import sqlite3
 
-from maps import connect_to_database, fetch_area_line_data, create_area_line_map, fetch_line_machine_data, \
-    create_line_machine_map, fetch_machine_problem_data, create_machine_problem_map, fetch_problem_caction_data, \
-    create_problem_caction_map, fetch_area_line_data_tab2
+from PyQt5 import QtCore
 
-from styles import treeStyle
+from components.suggestionBar import CompleterDelegate
+from helpers.maps import connect_to_database, fetch_area_line_data_tab2, create_full_map
+
+from materials.styles import treeStyle
 from PyQt5.QtWidgets import QMessageBox, QTreeWidgetItem
 
 
@@ -18,7 +19,6 @@ def set_labels(area_value_line_edit_short, area_value_line_edit_full, line_value
         line_value_line_edit_short.setText(line_name)
         line_value_line_edit_full.setText(line_name_db)
         time_value_line_edit.setText(str(tavail))
-
         if args:
             machine_line_edit.setText(args[0])
             if len(args) > 1:
@@ -32,7 +32,6 @@ def update_labels(item, area_value_line_edit_short, area_value_line_edit_full, l
                   corrective_action_line_edit):
     if item is None:
         return
-
     parent_items = []
     current_item = item
     while current_item.parent() is not None:
@@ -40,12 +39,8 @@ def update_labels(item, area_value_line_edit_short, area_value_line_edit_full, l
         if parent_text != "Overall Plant":
             parent_items.append(parent_text)
         current_item = current_item.parent()
-
-    print(parent_items)
-
     if not parent_items:
         return
-
     with connect_to_database() as conn:
         try:
             if len(parent_items) == 1:
@@ -56,7 +51,6 @@ def update_labels(item, area_value_line_edit_short, area_value_line_edit_full, l
                 machine_line_edit.clear()
                 problem_line_edit.clear()
                 corrective_action_line_edit.clear()
-
             elif len(parent_items) == 2:
                 result = fetch_area_line_data_tab2(conn, parent_items[1], parent_items[0])
                 set_labels(area_value_line_edit_short, area_value_line_edit_full, line_value_line_edit_short,
@@ -65,7 +59,6 @@ def update_labels(item, area_value_line_edit_short, area_value_line_edit_full, l
                            item.text(0))
                 problem_line_edit.clear()
                 corrective_action_line_edit.clear()
-
             elif len(parent_items) == 3:
                 result = fetch_area_line_data_tab2(conn, parent_items[2], parent_items[1])
                 set_labels(area_value_line_edit_short, area_value_line_edit_full, line_value_line_edit_short,
@@ -73,7 +66,6 @@ def update_labels(item, area_value_line_edit_short, area_value_line_edit_full, l
                            corrective_action_line_edit, parent_items[2], parent_items[1], result,
                            parent_items[0], item.text(0))
                 corrective_action_line_edit.clear()
-
             elif len(parent_items) == 4:
                 result = fetch_area_line_data_tab2(conn, parent_items[3], parent_items[2])
                 set_labels(area_value_line_edit_short, area_value_line_edit_full, line_value_line_edit_short,
@@ -84,260 +76,378 @@ def update_labels(item, area_value_line_edit_short, area_value_line_edit_full, l
             print("An error occurred:", e)
 
 
-def update_tree_widget(tree_widget, area_value_line_edit_short, area_value_line_edit_full, line_value_line_edit_short,
-                       line_value_line_edit_full, time_value_line_edit, machine_line_edit, problem_line_edit,
-                       corrective_action_line_edit):
+def update_tree_widget(tree_widget, area_value_line_edit_short, area_value_line_edit_full,
+                       line_value_line_edit_short, line_value_line_edit_full, time_value_line_edit,
+                       machine_line_edit, problem_line_edit, corrective_action_line_edit):
+    # Store expanded state before updating
+    expanded_states = {}
+    for item in tree_widget.findItems("", QtCore.Qt.MatchContains):
+        expanded_states[item.text(0)] = item.isExpanded()
+
     with connect_to_database() as conn:
         tree_widget.clear()
-        area_line_data = fetch_area_line_data(conn)
-        area_line_map = create_area_line_map(area_line_data)
-        line_machine_data = fetch_line_machine_data(conn)
-        line_machine_map = create_line_machine_map(line_machine_data)
-        machine_problem_data = fetch_machine_problem_data(conn)
-        machine_problem_map = create_machine_problem_map(machine_problem_data)
-        problem_caction_data = fetch_problem_caction_data(conn)
-        problem_caction_map = create_problem_caction_map(problem_caction_data)
+        area_line_map, line_machine_map, machine_problem_map, problem_caction_map = create_full_map(conn)
         tree_widget.setStyleSheet(treeStyle)
         tree_widget.setHeaderHidden(True)
-        overall_plant_item = QTreeWidgetItem(["Overall Plant"])
         for area, lines in area_line_map.items():
             area_item = QTreeWidgetItem([area])
             for line in lines:
-                line_item = QTreeWidgetItem([line])
-                if line in line_machine_map:
-                    for machine in line_machine_map[line]:
-                        machine_item = QTreeWidgetItem([machine])
-                        if machine in machine_problem_map:
-                            for problem in machine_problem_map[machine]:
-                                problem_item = QTreeWidgetItem([problem])
-                                if problem in problem_caction_map:
-                                    for corrective_action in problem_caction_map[problem]:
-                                        corrective_action_item = QTreeWidgetItem([corrective_action])
-                                        problem_item.addChild(corrective_action_item)
-                                machine_item.addChild(problem_item)
-                        line_item.addChild(machine_item)
-                area_item.addChild(line_item)
-            overall_plant_item.addChild(area_item)
-        tree_widget.addTopLevelItem(overall_plant_item)
-        tree_widget.itemClicked.connect(
-            lambda item: update_labels(item, area_value_line_edit_short, area_value_line_edit_full,
-                                       line_value_line_edit_short,
-                                       line_value_line_edit_full, time_value_line_edit, machine_line_edit,
-                                       problem_line_edit, corrective_action_line_edit))
+                if line is not None:  # Check if value is not None
+                    line_item = QTreeWidgetItem([line])
+                    if line in line_machine_map:
+                        for machine in line_machine_map[line]:
+                            if machine is not None:  # Check if value is not None
+                                machine_item = QTreeWidgetItem([machine])
+                                if machine in machine_problem_map:
+                                    for problem in machine_problem_map[machine]:
+                                        if problem is not None:  # Check if value is not None
+                                            problem_item = QTreeWidgetItem([problem])
+                                            if problem in problem_caction_map:
+                                                for corrective_action in problem_caction_map[problem]:
+                                                    if corrective_action is not None:  # Check if value is not None
+                                                        corrective_action_item = QTreeWidgetItem([corrective_action])
+                                                        problem_item.addChild(corrective_action_item)
+                                            machine_item.addChild(problem_item)
+                                line_item.addChild(machine_item)
+                    area_item.addChild(line_item)
+            tree_widget.addTopLevelItem(area_item)
+
+    # Restore expanded state after updating
+    for item_name, is_expanded in expanded_states.items():
+        items = tree_widget.findItems(item_name, QtCore.Qt.MatchExactly)
+        if items:
+            items[0].setExpanded(is_expanded)
+
+    tree_widget.itemClicked.connect(
+        lambda item: update_labels(item, area_value_line_edit_short, area_value_line_edit_full,
+                                   line_value_line_edit_short, line_value_line_edit_full, time_value_line_edit,
+                                   machine_line_edit, problem_line_edit, corrective_action_line_edit))
 
 
-def add_data_to_database(area_value_line_edit_short, area_value_line_edit_full, line_value_line_edit_short,
+def add_data_to_database(table_widget, area_value_line_edit_short, area_value_line_edit_full,
+                         line_value_line_edit_short,
                          line_value_line_edit_full, time_value_line_edit, machine_line_edit, problem_line_edit,
                          corrective_action_line_edit, tree_widget):
     try:
+        area_short = area_value_line_edit_short.text().strip()
+        area_full = area_value_line_edit_full.text().strip()
         line_short = line_value_line_edit_short.text().strip()
         line_full = line_value_line_edit_full.text().strip()
         time_avail = time_value_line_edit.text().strip()
         machine_name = machine_line_edit.text().strip()
         problem_desc = problem_line_edit.text().strip()
         corrective_action_desc = corrective_action_line_edit.text().strip()
-
-        if not line_short or not line_full or not time_avail:
-            QMessageBox.warning(None, "Error", "Please provide Line Name and Time Availability.")
-            return
-        elif not machine_name and problem_desc:
-            QMessageBox.warning(None, "Error", "Please provide Machine Name.")
-            return
-        elif not problem_desc and corrective_action_desc:
-            QMessageBox.warning(None, "Error", "Please provide Problem Description.")
-            return
-
-        with connect_to_database() as conn:
-            cursor = conn.cursor()
-
-            # Check if line exists or insert
-            cursor.execute("SELECT LNO FROM LINE WHERE LNAME = ? AND LONAME = ?", (line_short, line_full))
-            line_row = cursor.fetchone()
-            if not line_row:
-                cursor.execute("INSERT INTO LINE (LNAME, LONAME, TAVAIL) VALUES (?, ?, ?)",
-                               (line_short, line_full, time_avail))
-                lno = cursor.lastrowid
-            else:
-                lno = line_row[0]
-
-            # Check if machine exists or insert
-            cursor.execute("SELECT MNO FROM MACHINE WHERE MNAME = ?", (machine_name,))
-            machine_row = cursor.fetchone()
-            if not machine_row:
-                cursor.execute("INSERT INTO MACHINE (LNO, MNAME) VALUES (?, ?)", (lno, machine_name))
-                mno = cursor.lastrowid
-            else:
-                mno = machine_row[0]
-
-            # Check if problem exists or insert
-            cursor.execute("SELECT PNO FROM PROBLEM WHERE PDESC = ?", (problem_desc,))
-            problem_row = cursor.fetchone()
-            if not problem_row:
-                cursor.execute("INSERT INTO PROBLEM (MNO, PDESC) VALUES (?, ?)", (mno, problem_desc))
-                pno = cursor.lastrowid
-            else:
-                pno = problem_row[0]
-
-            # Check if corrective action exists or insert
-            cursor.execute("SELECT CNO FROM CACTION WHERE ADESC = ?", (corrective_action_desc,))
-            caction_row = cursor.fetchone()
-            if not caction_row:
-                cursor.execute("INSERT INTO CACTION (PNO, ADESC) VALUES (?, ?)", (pno, corrective_action_desc))
-
-            # Commit the transaction
-            conn.commit()
-
-            # Inform the user and update tree widget
-            QMessageBox.information(None, "Success", "Data added successfully to the database.")
-            update_tree_widget(tree_widget, area_value_line_edit_short, area_value_line_edit_full,
-                               line_value_line_edit_short, line_value_line_edit_full, time_value_line_edit,
-                               machine_line_edit, problem_line_edit, corrective_action_line_edit)
-
-    except sqlite3.Error as e:
-        # Handle SQLite errors
-        QMessageBox.critical(None, "Error", f"SQLite Error: {str(e)}")
-    except Exception as e:
-        # Handle other exceptions
-        QMessageBox.critical(None, "Error", f"Error occurred: {str(e)}")
-
-
-def update_data_in_database(area_value_line_edit_short, area_value_line_edit_full, line_value_line_edit_short,
-                            line_value_line_edit_full, time_value_line_edit, machine_line_edit, problem_line_edit,
-                            corrective_action_line_edit, tree_widget):
-    try:
-        line_short = line_value_line_edit_short.text().strip()
-        line_full = line_value_line_edit_full.text().strip()
-        time_avail = time_value_line_edit.text().strip()
-        machine_name = machine_line_edit.text().strip()
-        problem_desc = problem_line_edit.text().strip()
-        corrective_action_desc = corrective_action_line_edit.text().strip()
-
-        with connect_to_database() as conn:
-            cursor = conn.cursor()
-
-            if not line_short or not line_full or not time_avail:
-                QMessageBox.warning(None, "Error", "Please provide Line Name and Time Availability.")
-                return
-
-            if not machine_name and problem_desc:
-                QMessageBox.warning(None, "Error", "Please provide Machine Name.")
-                return
-
-            if not problem_desc and corrective_action_desc:
-                QMessageBox.warning(None, "Error", "Please provide Problem Description.")
-                return
-
-            # Check and update line information
-            if line_short:
-                cursor.execute("SELECT LNAME FROM LINE WHERE LNAME = ?", (line_short,))
+        if (line_full and line_short and time_avail and not machine_name
+                and not problem_desc and not corrective_action_desc):
+            with connect_to_database() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT ANO FROM AREA WHERE ANAME = ? AND AONAME = ?", (area_short, area_full))
+                area_row = cursor.fetchone()
+                ano = area_row[0]
+                cursor.execute("SELECT * FROM LINE WHERE ANO = ? AND LNAME = ? AND LONAME = ? AND TAVAIL = ?",
+                               (ano, line_short, line_full, time_avail))
                 line_row = cursor.fetchone()
-                if not line_row:
-                    QMessageBox.warning(None, "Error", "Line does not exist. Please add it using the 'Add' function.")
+                if line_row:
+                    QMessageBox.information(None, "Failed", "The Line already exists in the database.")
                     return
                 else:
-                    cursor.execute("UPDATE LINE SET LONAME = ?, TAVAIL = ? WHERE LNAME = ?",
-                                   (line_full, time_avail, line_short))
-
-            # Check and update machine information
-            if machine_name:
-                cursor.execute("SELECT MNAME FROM MACHINE WHERE MNAME = ?", (machine_name,))
+                    cursor.execute("INSERT INTO LINE (ANO, LNAME, LONAME, TAVAIL) VALUES (?, ?, ?, ?)",
+                                   (ano, line_short, line_full, time_avail))
+                    conn.commit()
+                    QMessageBox.information(None, "Success", "The Line is added successfully to the database.")
+                    update_tree_widget(tree_widget, area_value_line_edit_short, area_value_line_edit_full,
+                                       line_value_line_edit_short, line_value_line_edit_full, time_value_line_edit,
+                                       machine_line_edit, problem_line_edit, corrective_action_line_edit)
+                    delegate = CompleterDelegate(table_widget)
+                    table_widget.setItemDelegate(delegate)
+            return
+        elif line_full and line_short and time_avail and machine_name and not problem_desc and not corrective_action_desc:
+            with connect_to_database() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT ANO FROM AREA WHERE ANAME = ? AND AONAME = ?", (area_short, area_full))
+                area_row = cursor.fetchone()
+                ano = area_row[0]
+                cursor.execute("SELECT LNO FROM LINE WHERE ANO = ? AND LNAME = ? AND LONAME = ? AND TAVAIL = ?",
+                               (ano, line_short, line_full, time_avail))
+                line_row = cursor.fetchone()
+                lno = line_row[0]
+                cursor.execute("SELECT * FROM MACHINE WHERE ANO = ? AND LNO = ? AND MNAME = ?",
+                               (ano, lno, machine_name))
                 machine_row = cursor.fetchone()
-                if not machine_row:
-                    QMessageBox.warning(None, "Error", "Machine does not exist. Please add it using the 'Add' function.")
+                if machine_row:
+                    QMessageBox.information(None, "Failed", "The Machine already exists in the database.")
                     return
                 else:
-                    cursor.execute("UPDATE MACHINE SET LNO = (SELECT LNO FROM LINE WHERE LNAME = ?) WHERE MNAME = ?",
-                                   (line_short, machine_name))
-
-            # Check and update problem information
-            if problem_desc:
-                cursor.execute("SELECT PDESC FROM PROBLEM WHERE PDESC = ?", (problem_desc,))
+                    cursor.execute("INSERT INTO MACHINE (ANO, LNO, MNAME) VALUES (?, ?, ?)", (ano, lno, machine_name))
+                    conn.commit()
+                    QMessageBox.information(None, "Success", "The Machine added successfully to the database.")
+                    update_tree_widget(tree_widget, area_value_line_edit_short, area_value_line_edit_full,
+                                       line_value_line_edit_short, line_value_line_edit_full, time_value_line_edit,
+                                       machine_line_edit, problem_line_edit, corrective_action_line_edit)
+                    delegate = CompleterDelegate(table_widget)
+                    table_widget.setItemDelegate(delegate)
+            return
+        elif line_full and line_short and time_avail and machine_name and problem_desc and not corrective_action_desc:
+            with connect_to_database() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT ANO FROM AREA WHERE ANAME = ? AND AONAME = ?", (area_short, area_full))
+                area_row = cursor.fetchone()
+                ano = area_row[0]
+                cursor.execute("SELECT LNO FROM LINE WHERE ANO = ? AND LNAME = ? AND LONAME = ? AND TAVAIL= ?",
+                               (ano, line_short, line_full, time_avail))
+                line_row = cursor.fetchone()
+                lno = line_row[0]
+                cursor.execute("SELECT MNO FROM MACHINE WHERE ANO = ? AND LNO = ? AND MNAME = ?",
+                               (ano, lno, machine_name))
+                machine_row = cursor.fetchone()
+                mno = machine_row[0]
+                cursor.execute("SELECT * FROM PROBLEM WHERE ANO = ? AND LNO = ? AND MNO = ? AND PDESC = ?",
+                               (ano, lno, mno, problem_desc))
                 problem_row = cursor.fetchone()
-                if not problem_row:
-                    QMessageBox.warning(None, "Error", "Problem does not exist. Please add it using the 'Add' function.")
+                if problem_row:
+                    QMessageBox.information(None, "Failed", "The Problem already exists in the database.")
                     return
                 else:
-                    cursor.execute("UPDATE PROBLEM SET MNO = (SELECT MNO FROM MACHINE WHERE MNAME = ?) WHERE PDESC = ?",
-                                   (machine_name, problem_desc))
-
-            # Check and update corrective action information
-            if corrective_action_desc:
-                cursor.execute("SELECT ADESC FROM CACTION WHERE ADESC = ?", (corrective_action_desc,))
+                    cursor.execute("INSERT INTO PROBLEM (ANO, LNO, MNO, PDESC) VALUES (?, ?, ?, ?)",
+                                   (ano, lno, mno, problem_desc))
+                    conn.commit()
+                    QMessageBox.information(None, "Success", "The Problem added successfully to the database.")
+                    update_tree_widget(tree_widget, area_value_line_edit_short, area_value_line_edit_full,
+                                       line_value_line_edit_short, line_value_line_edit_full, time_value_line_edit,
+                                       machine_line_edit, problem_line_edit, corrective_action_line_edit)
+                    delegate = CompleterDelegate(table_widget)
+                    table_widget.setItemDelegate(delegate)
+            return
+        elif line_full and line_short and time_avail and machine_name and problem_desc and corrective_action_desc:
+            with connect_to_database() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT ANO FROM AREA WHERE ANAME = ? AND AONAME = ?", (area_short, area_full))
+                area_row = cursor.fetchone()
+                ano = area_row[0]
+                cursor.execute("SELECT LNO FROM LINE WHERE ANO = ? AND LNAME = ? AND LONAME = ? AND TAVAIL = ?",
+                               (ano, line_short, line_full, time_avail))
+                line_row = cursor.fetchone()
+                lno = line_row[0]
+                cursor.execute("SELECT MNO FROM MACHINE WHERE ANO = ? AND LNO = ? AND MNAME = ?",
+                               (ano, lno, machine_name))
+                machine_row = cursor.fetchone()
+                mno = machine_row[0]
+                cursor.execute("SELECT PNO FROM PROBLEM WHERE ANO = ? AND LNO = ? AND MNO = ? AND PDESC = ?",
+                               (ano, lno, mno, problem_desc))
+                problem_row = cursor.fetchone()
+                pno = problem_row[0]
+                cursor.execute(
+                    "SELECT * FROM CACTION WHERE ANO = ? AND LNO = ? AND MNO = ? AND PNO = ? AND ADESC = ?",
+                    (ano, lno, mno, pno, corrective_action_desc))
                 caction_row = cursor.fetchone()
-                if not caction_row:
-                    QMessageBox.warning(None, "Error", "Corrective action does not exist. Please add it using the 'Add' function.")
+                if caction_row:
+                    QMessageBox.information(None, "Failed", "The Corrective action already exists in the database.")
                     return
                 else:
-                    cursor.execute("UPDATE CACTION SET PNO = (SELECT PNO FROM PROBLEM WHERE PDESC = ?) WHERE ADESC = ?",
-                                   (problem_desc, corrective_action_desc))
+                    cursor.execute("INSERT INTO CACTION (ANO, LNO, MNO, PNO, ADESC) VALUES (?, ?, ?, ?, ?)",
+                                   (ano, lno, mno, pno, corrective_action_desc))
+                    conn.commit()
+                    QMessageBox.information(None, "Success",
+                                            "The Corrective action is added successfully to the database.")
+                    update_tree_widget(tree_widget, area_value_line_edit_short, area_value_line_edit_full,
+                                       line_value_line_edit_short, line_value_line_edit_full, time_value_line_edit,
+                                       machine_line_edit, problem_line_edit, corrective_action_line_edit)
+                    delegate = CompleterDelegate(table_widget)
+                    table_widget.setItemDelegate(delegate)
+            return
+    except sqlite3.Error as e:
+        error_message = str(e)
+        if "UNIQUE constraint failed" in error_message:
+            QMessageBox.critical(None, "Error", "The data you're trying to add already exists in the database. "
+                                                "Please ensure that all fields are unique.")
+        else:
+            QMessageBox.critical(None, "Error", f"SQLite Error: {str(e)}")
+    except TypeError as e:
+        if str(e) == "'NoneType' object is not subscriptable":
+            QMessageBox.critical(None, "Failed", "Cannot add data all at once. add data one by one.")
+        else:
+            QMessageBox.critical(None, "Error", f"Error occurred: {str(e)}")
 
-            conn.commit()
-            QMessageBox.information(None, "Success", "Data updated successfully in the database.")
-            update_tree_widget(tree_widget, area_value_line_edit_short, area_value_line_edit_full,
-                               line_value_line_edit_short, line_value_line_edit_full, time_value_line_edit,
-                               machine_line_edit, problem_line_edit, corrective_action_line_edit)
+
+def remove_data_from_database(table_widget, area_value_line_edit_short, area_value_line_edit_full,
+                              line_value_line_edit_short, line_value_line_edit_full, time_value_line_edit,
+                              machine_line_edit, problem_line_edit, corrective_action_line_edit, tree_widget):
+    try:
+        confirmation = QMessageBox.question(None, "Confirmation",
+                                            "Are you sure you want to delete this data?",
+                                            QMessageBox.Yes | QMessageBox.No)
+        if confirmation == QMessageBox.Yes:
+            area_short = area_value_line_edit_short.text().strip()
+            area_full = area_value_line_edit_full.text().strip()
+            line_short = line_value_line_edit_short.text().strip()
+            line_full = line_value_line_edit_full.text().strip()
+            time_avail = time_value_line_edit.text().strip()
+            machine_name = machine_line_edit.text().strip()
+            problem_desc = problem_line_edit.text().strip()
+            corrective_action_desc = corrective_action_line_edit.text().strip()
+            if (line_full and line_short and time_avail and not machine_name
+                    and not problem_desc and not corrective_action_desc):
+                with connect_to_database() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT ANO FROM AREA WHERE ANAME = ? AND AONAME = ?", (area_short, area_full))
+                    area_row = cursor.fetchone()
+                    ano = area_row[0]
+                    cursor.execute("SELECT LNO FROM LINE WHERE ANO = ? AND LNAME = ? AND LONAME = ? AND TAVAIL = ?",
+                                   (ano, line_short, line_full, time_avail))
+                    line_row = cursor.fetchone()
+                    lno = line_row[0]
+                    if not line_row:
+                        QMessageBox.information(None, "Failed", "The Line does not exist in the database.")
+                        return
+                    else:
+                        cursor.execute("SELECT COUNT(*) as C FROM MACHINE WHERE ANO = ? AND LNO = ?",
+                                       (ano, lno))
+                        machine_count = cursor.fetchone()[0]
+                        if machine_count > 0:
+                            QMessageBox.information(None, "Warning",
+                                                    "There are machines associated with this line. Please delete the "
+                                                    "machines first.")
+                            return
+                        else:
+                            cursor.execute("DELETE FROM LINE WHERE ANO = ? AND LNAME = ? AND LONAME = ? AND TAVAIL = ?",
+                                           (ano, line_short, line_full, time_avail))
+                            conn.commit()
+                            QMessageBox.information(None, "Success",
+                                                    "The Line is deleted successfully from the database.")
+                            update_tree_widget(tree_widget, area_value_line_edit_short, area_value_line_edit_full,
+                                               line_value_line_edit_short, line_value_line_edit_full,
+                                               time_value_line_edit,
+                                               machine_line_edit, problem_line_edit, corrective_action_line_edit)
+                            delegate = CompleterDelegate(table_widget)
+                            table_widget.setItemDelegate(delegate)
+                return
+            elif (line_full and line_short and time_avail and machine_name
+                  and not problem_desc and not corrective_action_desc):
+                with connect_to_database() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT ANO FROM AREA WHERE ANAME = ? AND AONAME = ?", (area_short, area_full))
+                    area_row = cursor.fetchone()
+                    ano = area_row[0]
+                    cursor.execute("SELECT LNO FROM LINE WHERE ANO = ? AND LNAME = ? AND LONAME = ? AND TAVAIL = ?",
+                                   (ano, line_short, line_full, time_avail))
+                    line_row = cursor.fetchone()
+                    lno = line_row[0]
+                    cursor.execute("SELECT MNO FROM MACHINE WHERE ANO = ? AND LNO = ? AND MNAME = ?",
+                                   (ano, lno, machine_name))
+                    machine_row = cursor.fetchone()
+                    mno = machine_row[0]
+                    if not machine_row:
+                        QMessageBox.information(None, "Failed", "The Machine does not exist in the database.")
+                        return
+                    else:
+                        cursor.execute("SELECT COUNT(*) FROM PROBLEM WHERE ANO = ? AND LNO = ? AND MNO = ?",
+                                       (ano, lno, mno))
+                        problem_count = cursor.fetchone()[0]
+                        if problem_count > 0:
+                            QMessageBox.information(None, "Warning",
+                                                    "There are problems associated with this machine. Please delete the problems first.")
+                            return
+                        else:
+                            cursor.execute("DELETE FROM MACHINE WHERE ANO = ? AND LNO = ? AND MNAME = ?",
+                                           (ano, lno, machine_name))
+                            conn.commit()
+                            QMessageBox.information(None, "Success",
+                                                    "The Machine deleted successfully from the database.")
+                            update_tree_widget(tree_widget, area_value_line_edit_short, area_value_line_edit_full,
+                                               line_value_line_edit_short, line_value_line_edit_full,
+                                               time_value_line_edit,
+                                               machine_line_edit, problem_line_edit, corrective_action_line_edit)
+                            delegate = CompleterDelegate(table_widget)
+                            table_widget.setItemDelegate(delegate)
+                return
+            elif (line_full and line_short and time_avail and machine_name
+                  and problem_desc and not corrective_action_desc):
+                with connect_to_database() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT ANO FROM AREA WHERE ANAME = ? AND AONAME = ?", (area_short, area_full))
+                    area_row = cursor.fetchone()
+                    ano = area_row[0]
+                    cursor.execute("SELECT LNO FROM LINE WHERE ANO = ? AND LNAME = ? AND LONAME = ? AND TAVAIL= ?",
+                                   (ano, line_short, line_full, time_avail))
+                    line_row = cursor.fetchone()
+                    lno = line_row[0]
+                    cursor.execute("SELECT MNO FROM MACHINE WHERE ANO = ? AND LNO = ? AND MNAME = ?",
+                                   (ano, lno, machine_name))
+                    machine_row = cursor.fetchone()
+                    mno = machine_row[0]
+                    cursor.execute("SELECT PNO FROM PROBLEM WHERE ANO = ? AND LNO = ? AND MNO = ? AND PDESC = ?",
+                                   (ano, lno, mno, problem_desc))
+                    problem_row = cursor.fetchone()
+                    pno = machine_row[0]
+                    if not problem_row:
+                        QMessageBox.information(None, "Failed", "The Problem does not exist in the database.")
+                        return
+                    else:
+                        cursor.execute("SELECT COUNT(*) FROM CACTION WHERE ANO = ? AND LNO = ? AND MNO = ? AND PNO = ?",
+                                       (ano, lno, mno, pno))
+                        caction_count = cursor.fetchone()[0]
+                        if caction_count > 0:
+                            QMessageBox.information(None, "Warning",
+                                                    "There are corrective actions associated with this problem. Please delete the corrective actions first.")
+                            return
+                        else:
+                            cursor.execute("DELETE FROM PROBLEM WHERE ANO = ? AND LNO = ? AND MNO = ? AND PDESC = ?",
+                                           (ano, lno, mno, problem_desc))
+                            conn.commit()
+                            QMessageBox.information(None, "Success",
+                                                    "The Problem deleted successfully from the database.")
+                            update_tree_widget(tree_widget, area_value_line_edit_short, area_value_line_edit_full,
+                                               line_value_line_edit_short, line_value_line_edit_full,
+                                               time_value_line_edit,
+                                               machine_line_edit, problem_line_edit, corrective_action_line_edit)
+                            delegate = CompleterDelegate(table_widget)
+                            table_widget.setItemDelegate(delegate)
+                return
+            elif (line_full and line_short and time_avail and machine_name
+                  and problem_desc and corrective_action_desc):
+                with connect_to_database() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        '''
+                            SELECT ANO, LNO, MNO, PNO
+                            FROM CACTION
+                            WHERE ANO IN (SELECT ANO FROM AREA WHERE ANAME = ? AND AONAME = ?)
+                              AND LNO IN (SELECT LNO FROM LINE WHERE LNAME = ? AND LONAME = ? AND TAVAIL = ?)
+                              AND MNO IN (SELECT MNO FROM MACHINE WHERE MNAME = ?)
+                              AND PNO IN (SELECT PNO FROM PROBLEM WHERE PDESC = ?)
+                        ''',
+                        (area_short, area_full, line_short, line_full, time_avail, machine_name, problem_desc))
+                    caction_rows = cursor.fetchall()
+                    found = False
+                    for ano, lno, mno, pno in caction_rows:
+                        cursor.execute(
+                            "SELECT CNO FROM CACTION WHERE ANO = ? AND LNO = ? AND MNO = ? AND PNO = ? AND ADESC = ?",
+                            (ano, lno, mno, pno, corrective_action_desc))
+                        existing_action = cursor.fetchone()
+                        if existing_action:
+                            found = True
+                            cursor.execute(
+                                "DELETE FROM CACTION WHERE ANO = ? AND LNO = ? AND MNO = ? AND PNO = ? AND ADESC = ?",
+                                (ano, lno, mno, pno, corrective_action_desc))
+                            conn.commit()
+                            QMessageBox.information(None, "Success",
+                                                    "The Corrective action is deleted successfully from the database.")
+                            update_tree_widget(tree_widget, area_value_line_edit_short, area_value_line_edit_full,
+                                               line_value_line_edit_short, line_value_line_edit_full,
+                                               time_value_line_edit,
+                                               machine_line_edit, problem_line_edit, corrective_action_line_edit)
+                            delegate = CompleterDelegate(table_widget)
+                            table_widget.setItemDelegate(delegate)
+                    if not found:
+                        QMessageBox.information(None, "Not Found",
+                                                "The specified Corrective action does not exist in the database.")
+                    return
+        else:
+            return
     except sqlite3.Error as e:
         QMessageBox.critical(None, "Error", f"SQLite Error: {str(e)}")
-    except Exception as e:
-        QMessageBox.critical(None, "Error", f"Error occurred: {str(e)}")
-
-
-def remove_data_from_database(area_value_line_edit_short, area_value_line_edit_full, line_value_line_edit_short,
-                              line_value_line_edit_full, time_value_line_edit, machine_line_edit, problem_line_edit,
-                              corrective_action_line_edit, tree_widget):
-    try:
-        line_short = line_value_line_edit_short.text().strip()
-        line_full = line_value_line_edit_full.text().strip()
-        machine_name = machine_line_edit.text().strip()
-        problem_desc = problem_line_edit.text().strip()
-        corrective_action_desc = corrective_action_line_edit.text().strip()
-
-        with connect_to_database() as conn:
-            cursor = conn.cursor()
-
-            if machine_name:
-                cursor.execute("SELECT MNO FROM MACHINE WHERE MNAME = ?", (machine_name,))
-                machine_row = cursor.fetchone()
-                if not machine_row:
-                    QMessageBox.warning(None, "Error", f"Machine '{machine_name}' does not exist in the database.")
-                    return
-
-            if problem_desc:
-                cursor.execute("SELECT PNO FROM PROBLEM WHERE PDESC = ?", (problem_desc,))
-                problem_row = cursor.fetchone()
-                if not problem_row:
-                    QMessageBox.warning(None, "Error", f"Problem '{problem_desc}' does not exist in the database.")
-                    return
-
-            if corrective_action_desc:
-                cursor.execute("SELECT CNO FROM CACTION WHERE ADESC = ?", (corrective_action_desc,))
-                caction_row = cursor.fetchone()
-                if not caction_row:
-                    QMessageBox.warning(None, "Error",
-                                        f"Corrective action '{corrective_action_desc}' does not exist in the database.")
-                    return
-
-            if not line_short and not line_full:
-                QMessageBox.warning(None, "Error", "Please provide Line Name.")
-                return
-
-            cursor.execute("DELETE FROM CACTION WHERE PNO IN "
-                           "(SELECT PNO FROM PROBLEM WHERE PDESC = ?) "
-                           "AND ADESC = ?",
-                           (problem_desc, corrective_action_desc))
-
-            cursor.execute("DELETE FROM PROBLEM WHERE PDESC = ?", (problem_desc,))
-
-            if machine_name:
-                cursor.execute("DELETE FROM MACHINE WHERE MNAME = ?", (machine_name,))
-
-            if not line_short and not line_full:
-                cursor.execute("DELETE FROM LINE WHERE LNAME = ? AND LONAME = ?", (line_short, line_full))
-
-            conn.commit()
-            QMessageBox.information(None, "Success", "Data removed successfully from the database.")
-            update_tree_widget(tree_widget, area_value_line_edit_short, area_value_line_edit_full,
-                               line_value_line_edit_short, line_value_line_edit_full, time_value_line_edit,
-                               machine_line_edit, problem_line_edit, corrective_action_line_edit)
-    except Exception as e:
-        QMessageBox.critical(None, "Error", f"Error occurred: {str(e)}")
+    except TypeError as e:
+        if str(e) == "'NoneType' object is not subscriptable":
+            QMessageBox.critical(None, "Failed", "Can't delete data all at once. Delete data one by one.")
+        else:
+            QMessageBox.critical(None, "Error", f"Error occurred: {str(e)}")

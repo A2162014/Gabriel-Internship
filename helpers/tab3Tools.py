@@ -1,144 +1,157 @@
+import json
+import os
 from math import floor
 
+import numpy as np
 from PyQt5.QtCore import QPoint, Qt
 from PyQt5.QtGui import QPainter, QPixmap
 from PyQt5.QtWidgets import (QAbstractItemView, QHBoxLayout, QFileDialog, QHeaderView, QSizePolicy,
-                             QSpacerItem, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+                             QSpacerItem, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget, QMessageBox)
 from matplotlib import pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
-from maps import (barcharts, tables, connect_to_database, fetch_area_line_data, create_area_line_map,
-                  fetch_values, fetch_lonames_for_ano, create_time_availability)
+from components.titledTable import TitledTableWidget
+from helpers import tab1Utils
+from helpers.maps import (connect_to_database, fetch_values, fetch_lonames_for_ano, current_dir, create_full_map,
+                          create_time_availability_machines, create_time_availability_lines, month_map, stat_headers,
+                          tables, barcharts, extract_lines_machines_problems_of_area)
+
+table_widget = None
+bar_chart_widget = None
+container_widget = None
+line_edits = None
+current_month = 0
 
 
 def scroll_to_top(tab3_scroll_area):
     tab3_scroll_area.verticalScrollBar().setValue(0)
 
 
+def load_line_edit_values(json_file_path):
+    try:
+        with open(json_file_path) as f:
+            data = json.load(f)
+            return data.get('line_edits')
+    except FileNotFoundError:
+        show_error_message("JSON file not found.")
+        return None
+    except json.JSONDecodeError:
+        show_error_message("Error decoding JSON file.")
+        return None
+
+
+def save_statistics(scroll_area):
+    if not tables and not barcharts:
+        QMessageBox.warning(None, "Cannot Save", "Please select statistics to save.")
+        return
+    file_path, _ = QFileDialog.getSaveFileName(None, "Save Merged Image", "", "PNG (*.png)")
+    if not file_path:
+        return
+    for table_widget in tables:
+        if table_widget is not None:
+            table_widget.clearSelection()
+    merged_image_height = scroll_area.viewport().size().height()
+    merged_image = QPixmap(scroll_area.viewport().size().width(), merged_image_height)
+    merged_image.fill(Qt.white)
+    painter = QPainter(merged_image)
+    painter.begin(merged_image)
+    y_offset = 0
+    for table_widget in tables:
+        if table_widget is not None:
+            table_pixmap = QPixmap(table_widget.size())
+            table_widget.render(table_pixmap)
+            table_pos = table_widget.mapTo(scroll_area.viewport(), QPoint(0, 0))
+            painter.drawPixmap(table_pos, table_pixmap)
+            y_offset += table_widget.height()
+    if barcharts is not None:
+        for bar_chart_widget in barcharts:
+            if bar_chart_widget is not None:
+                bar_chart_pixmap = QPixmap(bar_chart_widget.size())
+                bar_chart_widget.render(bar_chart_pixmap)
+                bar_chart_pos = bar_chart_widget.mapTo(scroll_area.viewport(), QPoint(0, 0))
+                painter.drawPixmap(bar_chart_pos, bar_chart_pixmap)
+                y_offset += bar_chart_widget.height()
+    painter.end()
+    merged_image.save(file_path)
+    has_horizontal_scrollbar = scroll_area.horizontalScrollBar().isVisible()
+    has_vertical_scrollbar = scroll_area.verticalScrollBar().isVisible()
+    is_horizontal_at_end = scroll_area.horizontalScrollBar().value() == scroll_area.horizontalScrollBar().maximum()
+    is_vertical_at_end = scroll_area.verticalScrollBar().value() == scroll_area.verticalScrollBar().maximum()
+    if has_horizontal_scrollbar and has_vertical_scrollbar:
+        message_text = "Please scroll vertically and horizontally to view the full statistics."
+    elif has_horizontal_scrollbar:
+        if not is_horizontal_at_end:
+            message_text = "Please scroll horizontally to view the full statistics."
+        else:
+            return
+    elif has_vertical_scrollbar:
+        if not is_vertical_at_end:
+            message_text = "Please scroll vertically to view the full statistics."
+        else:
+            return
+    else:
+        return
+    message_box = QMessageBox()
+    message_box.setWindowTitle("Scroll to View Full Statistics")
+    message_box.setIcon(QMessageBox.Information)
+    message_box.setText(message_text)
+    message_box.exec_()
+
+
+def show_error_message(message, parent=None):
+    error_dialog = QMessageBox(parent)
+    error_dialog.warning(parent, "Error", f'<span style="font-size: 12pt;">{message}</span>')
+
+
 def get_area_for_line(line):
     with connect_to_database() as conn:
-        area_line_data = fetch_area_line_data(conn)
-        area_line_map = create_area_line_map(area_line_data)
-        conn.commit()
+        area_line_map, _, _, _ = create_full_map(conn)
     for area, lines in area_line_map.items():
         if line in lines:
             return area
     return None
 
 
-def save_statistics(scroll_area, tables, barcharts):
-    file_path, _ = QFileDialog.getSaveFileName(None, "Save Merged Image", "", "PNG (*.png)")
-    if not file_path:
-        return
-    merged_image = QPixmap(scroll_area.viewport().size().width(), 3300)
-    merged_image.fill(Qt.white)
-    painter = QPainter(merged_image)
-    painter.begin(merged_image)
-    y_offset = 0
-    for table_widget in tables:
-        table_widget.clearSelection()
-        table_pixmap = QPixmap(table_widget.size())
-        table_widget.render(table_pixmap)
-        table_pos = table_widget.mapTo(scroll_area.viewport(), QPoint(0, 0))
-        painter.drawPixmap(table_pos, table_pixmap)
-        y_offset += table_widget.height()
-    for bar_chart_widget in barcharts:
-        bar_chart_pixmap = QPixmap(bar_chart_widget.size())
-        bar_chart_widget.render(bar_chart_pixmap)
-        bar_chart_pos = bar_chart_widget.mapTo(scroll_area.viewport(), QPoint(0, 0))
-        painter.drawPixmap(bar_chart_pos, bar_chart_pixmap)
-        y_offset += bar_chart_widget.height()
-    painter.end()
-    merged_image.save(file_path)
-
-
-def add_widgets_to_scroll_area(scroll_area, file_name, dataframe, num_working_days, line_edits):
+def get_area_for_machine(machine):
     with connect_to_database() as conn:
-        area_stats_header = fetch_values(conn, "SELECT AONAME FROM AREA")
-        lines1_stats_header = fetch_lonames_for_ano(conn, 1)
-        lines2_stats_header = fetch_lonames_for_ano(conn, 2)
-        lines34_stats_header = fetch_lonames_for_ano(conn, 3) + fetch_lonames_for_ano(conn, 4)
-        area_line_data = fetch_area_line_data(conn)
-        area_line_map = create_area_line_map(area_line_data)
-        time_availability = create_time_availability(conn)
-        conn.commit()
-    scroll_content_widget1 = QWidget()
-    scroll_layout1 = QVBoxLayout(scroll_content_widget1)
-    scroll_layout1.setAlignment(Qt.AlignCenter)
-    widgets_widget1 = QWidget()
-    widgets_layout1 = QHBoxLayout(widgets_widget1)
-    widgets_layout1.setAlignment(Qt.AlignCenter)
+        area_line_map, line_machine_map, _, _ = create_full_map(conn)
+    for area, lines in area_line_map.items():
+        for line in lines:
+            if machine in line_machine_map.get(line, []):
+                return area
+    return None
+
+
+def get_line_edit(month, line_edits):
+    return line_edits[month - 1] if 1 <= month <= 12 else None  # Ensure month is within valid range
+
+
+def calculate_bd(area_line_map, dataframe, line_edits, month, time_availability):
     sums = {}
     avail_time_sums = {}
     for category, keywords in area_line_map.items():
-        total_sum = dataframe[dataframe["LINE"].isin(keywords)]["TOTAL TIME"].sum()
+        total_sum = dataframe[(dataframe["LINE"].isin(keywords)) & (dataframe["MONTH"] == month)]["TOTAL TIME"].sum()
         sums[category] = total_sum
         avail_time_sum = sum(
             time_availability[category][keyword] for keyword in keywords if keyword in time_availability[category])
         avail_time_sums[category] = avail_time_sum
+    num_rows_locations = len(avail_time_sums) + 1
     overall_plant_sum = sum(sums.values())
     overall_plant_avail_time_sum = sum(avail_time_sums.values())
-    bd_time_percentages = {category: sums[category] / (avail_time_sums[category] * num_working_days) * 100
+    num_days = get_line_edit(month, line_edits)
+    print(month)
+    print(num_days)
+    bd_time_percentages = {category: sums[category] / (avail_time_sums[category] * num_days) * 100
     if avail_time_sums[category] != 0 else 0 for category in sums}
-    overall_plant_bd_time_percentage = overall_plant_sum / (overall_plant_avail_time_sum * num_working_days) * 100 \
+    overall_plant_bd_time_percentage = overall_plant_sum / (overall_plant_avail_time_sum * num_days) * 100 \
         if overall_plant_avail_time_sum != 0 else 0
-    num_rows = len(avail_time_sums) + 1
-    table_widget1 = QTableWidget(num_rows, 3)
-    table_widget1.setHorizontalHeaderLabels(
-        ["Location", f"% of B/D in {file_name.text().split('.')[0]}", "Target in %"])
-    table_widget1.setEditTriggers(QAbstractItemView.NoEditTriggers)
-    table_widget1.setFixedHeight(37 * num_rows)
-    table_widget1.setFixedWidth(600)
-    table_widget1.setStyleSheet('''
-        QTableWidget { 
-            border: none; 
-        }
-    ''')
-    targets = [line_edits[1] for _ in range(num_rows)]
-    locations1 = ["Overall Plant"] + area_stats_header
-    percentages1 = [overall_plant_bd_time_percentage] + list(bd_time_percentages.values())
-    for i, (location1, percent1, target) in enumerate(zip(locations1, percentages1, targets)):
-        item_location = QTableWidgetItem(location1)
-        item_location.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
-        item_location.setTextAlignment(Qt.AlignCenter)
-        table_widget1.setItem(i, 0, item_location)
-        item_percent = QTableWidgetItem(f"{percent1:.2f}")
-        item_percent.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
-        item_percent.setTextAlignment(Qt.AlignCenter)
-        table_widget1.setItem(i, 1, item_percent)
-        item_target = QTableWidgetItem(str(target))
-        item_target.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
-        item_target.setTextAlignment(Qt.AlignCenter)
-        table_widget1.setItem(i, 2, item_target)
-    table_widget1.resizeRowsToContents()
-    table_widget1.resizeColumnsToContents()
-    table_widget1.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-    table_widget1.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-    widgets_layout1.addWidget(table_widget1)
-    spacer = QSpacerItem(60, 20)
-    widgets_layout1.addItem(spacer)
-    fig, ax = plt.subplots()
-    ax.bar(locations1, percentages1)
-    ax.set_title(f"% of B/D in {file_name.text().split('.')[0]}")
-    ax.axhline(y=float(line_edits[1]), color='r', linestyle='-')
-    ax.yaxis.grid(True)
-    ax.xaxis.grid(False)
-    max_value = max(percentages1) if percentages1 else 0
-    ax.set_ylim([0, max_value + (float(line_edits[1]) + 0.2)])
-    for bar in ax.patches:
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(), round(bar.get_height(), 2),
-                ha='center', va='bottom')
-    fig.tight_layout()
-    bar_chart_widget1 = FigureCanvas(fig)
-    bar_chart_widget1.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-    widgets_layout1.addWidget(bar_chart_widget1)
-    scroll_layout1.addWidget(widgets_widget1)
-    widgets_widget2 = QWidget()
-    widgets_layout2 = QHBoxLayout(widgets_widget2)
-    widgets_layout2.setAlignment(Qt.AlignCenter)
+    return num_rows_locations, sums, total_sum, avail_time_sums, bd_time_percentages, overall_plant_bd_time_percentage
+
+
+def calculate_occurrences_locations(area_line_map, dataframe, month):
     counts = {category: 0 for category in area_line_map}
     overall_plant_count = 0
-    for index, row in dataframe.iterrows():
+    for index, row in dataframe[dataframe["MONTH"] == month].iterrows():
         line = row["LINE"]
         total_time = row["TOTAL TIME"]
         if total_time > 0:
@@ -151,96 +164,259 @@ def add_widgets_to_scroll_area(scroll_area, file_name, dataframe, num_working_da
     counts["Overall Plant"] = overall_plant_count
     counts_ordered = {"Overall Plant": counts.pop("Overall Plant")}
     counts_ordered.update(counts)
-    table_widget2 = QTableWidget(num_rows, 2)
-    table_widget2.setHorizontalHeaderLabels(["Location", f"No of Occurrence in {file_name.text().split('.')[0]}"])
-    table_widget2.setEditTriggers(QAbstractItemView.NoEditTriggers)
-    table_widget2.setFixedHeight(37 * num_rows)
-    table_widget2.setFixedWidth(550)
-    table_widget2.setStyleSheet("QTableWidget { border: none; }")
-    locations2 = ["Overall Plant"] + area_stats_header
-    occurrences = list(counts_ordered.values())
-    for i, (location2, occur) in enumerate(zip(locations2, occurrences)):
-        item_location = QTableWidgetItem(location2)
+    return counts, counts_ordered, overall_plant_count
+
+
+def get_key(month_map, value):
+    for key, val in month_map.items():
+        if val == value:
+            return key
+    return None
+
+
+def get_bd_locations(month, area_line_map, dataframe, time_availability, line_edits, area_stats_header):
+    container_widget = QWidget()
+    widget_layout = QHBoxLayout(container_widget)
+    widget_layout.setAlignment(Qt.AlignCenter)
+    num_rows_locations, _, _, _, bd_time_percentages, overall_plant_bd_time_percentage = calculate_bd(area_line_map,
+                                                                                                      dataframe,
+                                                                                                      line_edits,
+                                                                                                      month,
+                                                                                                      time_availability)
+    table_widget = QTableWidget(num_rows_locations, 3)
+    month_title = get_key(month_map, month)
+    table_widget = TitledTableWidget(f"% of B/D in {month_title}", table_widget)
+    table_widget.setHorizontalHeaderLabels(
+        ["Location", f"% of B/D", "Target in %"])
+    table_widget.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    table_widget.setFixedHeight(48 * num_rows_locations)
+    table_widget.setFixedWidth(600)
+    table_widget.setStyleSheet('''
+        QTableWidget {
+            border: none;
+        }
+    ''')
+    targets = [line_edits[12] for _ in range(num_rows_locations)]
+    locations = ["Overall Plant"] + area_stats_header
+    percentages = [overall_plant_bd_time_percentage] + list(bd_time_percentages.values())
+    for i, (location, percent, target) in enumerate(zip(locations, percentages, targets)):
+        item_location = QTableWidgetItem(location)
         item_location.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
         item_location.setTextAlignment(Qt.AlignCenter)
-        table_widget2.setItem(i, 0, item_location)
+        table_widget.setItem(i, 0, item_location)
+        item_percent = QTableWidgetItem(f"{percent:.2f}")
+        item_percent.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+        item_percent.setTextAlignment(Qt.AlignCenter)
+        table_widget.setItem(i, 1, item_percent)
+        item_target = QTableWidgetItem(str(target))
+        item_target.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+        item_target.setTextAlignment(Qt.AlignCenter)
+        table_widget.setItem(i, 2, item_target)
+    table_widget.resizeRowsToContents()
+    table_widget.resizeColumnsToContents()
+    table_widget.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+    table_widget.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    widget_layout.addWidget(table_widget)
+    spacer = QSpacerItem(60, 20)
+    widget_layout.addItem(spacer)
+    fig, ax = plt.subplots()
+    ax.bar(locations, percentages)
+    ax.set_title(f"% of B/D in {month_title}")
+    ax.axhline(y=float(line_edits[12]), color='r', linestyle='-')
+    ax.yaxis.grid(True)
+    ax.xaxis.grid(False)
+    max_value = max(percentages) if percentages else 0
+    ax.set_ylim([0, max_value + (float(line_edits[12]) + 0.2)])
+    for bar in ax.patches:
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(), round(bar.get_height(), 2),
+                ha='center', va='bottom')
+    fig.tight_layout()
+    plt.close(fig)
+    bar_chart_widget = FigureCanvas(fig)
+    bar_chart_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+    widget_layout.addWidget(bar_chart_widget)
+    return table_widget, bar_chart_widget, container_widget
+
+
+def get_occurrences_locations(month, area_line_map, dataframe, line_edits, time_availability, area_stats_header):
+    container_widget = QWidget()
+    widget_layout = QHBoxLayout(container_widget)
+    widget_layout.setAlignment(Qt.AlignCenter)
+    num_rows_locations, _, _, _, _, _ = calculate_bd(area_line_map, dataframe, line_edits, month, time_availability)
+    _, counts_ordered, _ = calculate_occurrences_locations(area_line_map, dataframe, month)
+    table_widget = QTableWidget(num_rows_locations, 2)
+    month_title = get_key(month_map, month)
+    table_widget = TitledTableWidget(f"No of Occurrence in {month_title}", table_widget)
+    table_widget.setHorizontalHeaderLabels(["Location", f"No of Occurrence"])
+    table_widget.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    table_widget.setFixedHeight(48 * num_rows_locations)
+    table_widget.setFixedWidth(550)
+    table_widget.setStyleSheet("QTableWidget { border: none; }")
+    locations = ["Overall Plant"] + area_stats_header
+    occurrences = list(counts_ordered.values())
+    for i, (location, occur) in enumerate(zip(locations, occurrences)):
+        item_location = QTableWidgetItem(location)
+        item_location.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+        item_location.setTextAlignment(Qt.AlignCenter)
+        table_widget.setItem(i, 0, item_location)
         item_percent = QTableWidgetItem(str(occur))
         item_percent.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
         item_percent.setTextAlignment(Qt.AlignCenter)
-        table_widget2.setItem(i, 1, item_percent)
-    table_widget2.resizeRowsToContents()
-    table_widget2.resizeColumnsToContents()
-    table_widget2.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-    table_widget2.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-    widgets_layout2.addWidget(table_widget2)
-    scroll_layout1.addWidget(widgets_widget2)
-    widgets_widget3 = QWidget()
-    widgets_layout3 = QHBoxLayout(widgets_widget3)
-    widgets_layout3.setAlignment(Qt.AlignCenter)
+        table_widget.setItem(i, 1, item_percent)
+    table_widget.resizeRowsToContents()
+    table_widget.resizeColumnsToContents()
+    table_widget.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+    table_widget.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    widget_layout.addWidget(table_widget)
+    return table_widget, container_widget
+
+
+def get_occurrences_machines_problems(lines_machines_problems, dataframe, required_area, month):
+    container_widget = QWidget()
+    widget_layout = QHBoxLayout(container_widget)
+    widget_layout.setAlignment(Qt.AlignCenter)
+    problem_to_machines = {}
+    machine_to_line = {}
+    for line, machine, problem in lines_machines_problems:
+        if problem not in problem_to_machines:
+            problem_to_machines[problem] = set()
+        problem_to_machines[problem].add(machine)
+        machine_to_line[machine] = line
+    counts = {problem: 0 for problem in problem_to_machines.keys()}
+    for index, row in dataframe[dataframe["MONTH"] == month].iterrows():
+        total_time = row["TOTAL TIME"]
+        if total_time > 0:
+            area = row["AREA"]
+            if area == required_area:
+                machine = row["MACHINE"]
+                problem = row["PROBLEM"]
+                if problem in counts:
+                    counts[problem] += 1
+    sorted_counts = {k: v for k, v in sorted(counts.items(), key=lambda item: item[1], reverse=True)}
+    table_widget = QTableWidget(len(sorted_counts), 4)
+    month_title = get_key(month_map, month)
+    table_widget = TitledTableWidget(f"No of Occurrence in {required_area} - {month_title}", table_widget)
+    table_widget.setHorizontalHeaderLabels(["Line", "Machine", "Problem", f"No of Occurrence"])
+    table_widget.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    if len(sorted_counts) < 5:
+        table_widget.setFixedHeight(75 * len(sorted_counts))
+    elif len(sorted_counts) < 30:
+        table_widget.setFixedHeight(51 * len(sorted_counts))
+    elif len(sorted_counts) < 40:
+        table_widget.setFixedHeight(56 * len(sorted_counts))
+    else:
+        table_widget.setFixedHeight(35 * len(sorted_counts))
+    table_widget.setFixedWidth(1400)
+    table_widget.setStyleSheet("QTableWidget { border: none; }")
+    problems = list(sorted_counts.keys())
+    occurrences = list(sorted_counts.values())
+    for i, problem in enumerate(problems):
+        machines = ', '.join(problem_to_machines[problem])
+        lines = ', '.join(set(machine_to_line[machine] for machine in problem_to_machines[problem]))
+        item_lines = QTableWidgetItem(lines)
+        item_lines.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+        item_lines.setTextAlignment(Qt.AlignCenter)
+        table_widget.setItem(i, 0, item_lines)
+        item_machines = QTableWidgetItem(machines)
+        item_machines.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+        item_machines.setTextAlignment(Qt.AlignCenter)
+        table_widget.setItem(i, 1, item_machines)
+        item_problem = QTableWidgetItem(problem)
+        item_problem.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+        item_problem.setTextAlignment(Qt.AlignCenter)
+        table_widget.setItem(i, 2, item_problem)
+        item_occurrence = QTableWidgetItem(str(occurrences[i]))
+        item_occurrence.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+        item_occurrence.setTextAlignment(Qt.AlignCenter)
+        table_widget.setItem(i, 3, item_occurrence)
+    table_widget.resizeRowsToContents()
+    table_widget.resizeColumnsToContents()
+    table_widget.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+    table_widget.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    widget_layout.addWidget(table_widget)
+    return table_widget, container_widget
+
+
+def get_mtbf_locations(month, area_line_map, dataframe, time_availability, line_edits, area_stats_header):
+    container_widget = QWidget()
+    widget_layout = QHBoxLayout(container_widget)
+    widget_layout.setAlignment(Qt.AlignCenter)
+    _, counts_ordered, _ = calculate_occurrences_locations(area_line_map, dataframe, month)
+    num_rows_locations, sums, _, avail_time_sums, _, _ = calculate_bd(area_line_map, dataframe, line_edits, month,
+                                                                      time_availability)
     mtbf = {}
+    num_days = get_line_edit(month, line_edits)
     for category, total_sum in sums.items():
         denominator = counts_ordered.get(category, 1)
-        mtbf_val = (((avail_time_sums[category] * num_working_days) - total_sum) / denominator) / (
+        mtbf_val = (((avail_time_sums[category] * num_days) - total_sum) / denominator) / (
                 60 * 24) if denominator != 0 else 0
         mtbf[category] = mtbf_val if denominator != 0 else 0
-
     overall_plant_denominator = counts_ordered.get("Overall Plant", 1)
-    overall_plant_mtbf = (((sum(avail_time_sums.values()) * num_working_days) - sum(sums.values())) /
+    overall_plant_mtbf = (((sum(avail_time_sums.values()) * num_days) - sum(sums.values())) /
                           overall_plant_denominator) / (60 * 24)
     overall_plant_mtbf = overall_plant_mtbf if overall_plant_denominator != 0 else 0
-    table_widget3 = QTableWidget(num_rows, 3)
-    table_widget3.setHorizontalHeaderLabels(
-        ["Location", f"MTBF in {file_name.text().split('.')[0]}", "Target in Day's"])
-    table_widget3.setEditTriggers(QAbstractItemView.NoEditTriggers)
-    table_widget3.setFixedHeight(37 * num_rows)
-    table_widget3.setFixedWidth(600)
-    table_widget3.setStyleSheet('''
-        QTableWidget { 
-            border: none; 
+    table_widget = QTableWidget(num_rows_locations, 3)
+    month_title = get_key(month_map, month)
+    table_widget = TitledTableWidget(f"MTBF - {month_title}", table_widget)
+    table_widget.setHorizontalHeaderLabels(
+        ["Location", f"MTBF in Days", "Target in Day's"])
+    table_widget.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    table_widget.setFixedHeight(48 * num_rows_locations)
+    table_widget.setFixedWidth(600)
+    table_widget.setStyleSheet('''
+        QTableWidget {
+            border: none;
         }
     ''')
-    targets2 = [line_edits[2] for _ in range(num_rows)]
-    locations3 = ["Overall Plant"] + area_stats_header
+    targets = [line_edits[13] for _ in range(num_rows_locations)]
+    locations = ["Overall Plant"] + area_stats_header
     mttr_values = [overall_plant_mtbf] + list(mtbf.values())
-    for i, (location3, mttr, target2) in enumerate(zip(locations3, mttr_values, targets2)):
-        item_location = QTableWidgetItem(location3)
+    for i, (location, mttr, target) in enumerate(zip(locations, mttr_values, targets)):
+        item_location = QTableWidgetItem(location)
         item_location.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
         item_location.setTextAlignment(Qt.AlignCenter)
-        table_widget3.setItem(i, 0, item_location)
+        table_widget.setItem(i, 0, item_location)
         item_percent = QTableWidgetItem(f"{mttr:.2f}")
         item_percent.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
         item_percent.setTextAlignment(Qt.AlignCenter)
-        table_widget3.setItem(i, 1, item_percent)
-        item_target = QTableWidgetItem(str(target2))
+        table_widget.setItem(i, 1, item_percent)
+        item_target = QTableWidgetItem(str(target))
         item_target.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
         item_target.setTextAlignment(Qt.AlignCenter)
-        table_widget3.setItem(i, 2, item_target)
-    table_widget3.resizeRowsToContents()
-    table_widget3.resizeColumnsToContents()
-    table_widget3.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-    table_widget3.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-    widgets_layout3.addWidget(table_widget3)
+        table_widget.setItem(i, 2, item_target)
+    table_widget.resizeRowsToContents()
+    table_widget.resizeColumnsToContents()
+    table_widget.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+    table_widget.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    widget_layout.addWidget(table_widget)
     spacer = QSpacerItem(60, 20)
-    widgets_layout3.addItem(spacer)
-    fig2, ax2 = plt.subplots()
-    ax2.bar(locations3, mttr_values)
-    ax2.set_title(f"MTBF in Days - {file_name.text().split('.')[0]}")
-    ax2.axhline(y=float(line_edits[2]), color='r', linestyle='-')
-    ax2.yaxis.grid(True)
-    ax2.xaxis.grid(False)
-    max_value2 = max(mttr_values) if mttr_values else 0
-    ax2.set_ylim([0, floor(max_value2 + 30)])
-    for bar2 in ax2.patches:
-        ax2.text(bar2.get_x() + bar2.get_width() / 2, bar2.get_height(), round(bar2.get_height(), 2),
-                 ha='center', va='bottom')
-    fig2.tight_layout()
-    bar_chart_widget2 = FigureCanvas(fig2)
-    bar_chart_widget2.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-    widgets_layout3.addWidget(bar_chart_widget2)
-    scroll_layout1.addWidget(widgets_widget3)
-    widgets_widget4 = QWidget()
-    widgets_layout4 = QHBoxLayout(widgets_widget4)
-    widgets_layout4.setAlignment(Qt.AlignCenter)
+    widget_layout.addItem(spacer)
+    fig, ax = plt.subplots()
+    ax.bar(locations, mttr_values)
+    ax.set_title(f"MTBF in Days - {month_title}")
+    ax.axhline(y=float(line_edits[13]), color='r', linestyle='-')
+    ax.yaxis.grid(True)
+    ax.xaxis.grid(False)
+    max_value = max(mttr_values) if mttr_values else 0
+    ax.set_ylim([0, floor(max_value + 30)])
+    for bar in ax.patches:
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(), round(bar.get_height(), 2),
+                ha='center', va='bottom')
+    fig.tight_layout()
+    plt.close(fig)
+    bar_chart_widget = FigureCanvas(fig)
+    bar_chart_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+    widget_layout.addWidget(bar_chart_widget)
+    return table_widget, bar_chart_widget, container_widget
+
+
+def get_mttr_locations(month, area_line_map, dataframe, time_availability, line_edits, area_stats_header):
+    container_widget = QWidget()
+    widget_layout = QHBoxLayout(container_widget)
+    widget_layout.setAlignment(Qt.AlignCenter)
+    counts, _, overall_plant_count = calculate_occurrences_locations(area_line_map, dataframe, month)
+    num_rows_locations, sums, _, _, _, time_availability_lines = calculate_bd(area_line_map, dataframe, line_edits,
+                                                                              month, time_availability)
     mttr = {}
     for category, total_sum in sums.items():
         if counts[category] != 0:
@@ -248,250 +424,430 @@ def add_widgets_to_scroll_area(scroll_area, file_name, dataframe, num_working_da
         else:
             mttr[category] = 0
     overall_plant_mttr = sum(sums.values()) / overall_plant_count if overall_plant_count != 0 else 0
-    table_widget4 = QTableWidget(num_rows, 3)
-    table_widget4.setHorizontalHeaderLabels(
-        ["Location", f"MTTR in {file_name.text().split('.')[0]}", "Target in Min's"])
-    table_widget4.setEditTriggers(QAbstractItemView.NoEditTriggers)
-    table_widget4.setFixedHeight(37 * num_rows)
-    table_widget4.setFixedWidth(600)
-    table_widget4.setStyleSheet('''
-        QTableWidget { 
-            border: none; 
+    table_widget = QTableWidget(num_rows_locations, 3)
+    month_title = get_key(month_map, month)
+    table_widget = TitledTableWidget(f"MTTR - {month_title}", table_widget)
+    table_widget.setHorizontalHeaderLabels(
+        ["Location", f"MTTR in Mins", "Target in Min's"])
+    table_widget.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    table_widget.setFixedHeight(48 * num_rows_locations)
+    table_widget.setFixedWidth(600)
+    table_widget.setStyleSheet('''
+        QTableWidget {
+            border: none;
         }
     ''')
-    targets3 = [line_edits[3] for _ in range(num_rows)]
-    locations4 = ["Overall Plant"] + area_stats_header
+    targets = [line_edits[14] for _ in range(num_rows_locations)]
+    locations = ["Overall Plant"] + area_stats_header
     mtbf_values = [overall_plant_mttr] + list(mttr.values())
-    for i, (location4, mtbf_val, target3) in enumerate(zip(locations4, mtbf_values, targets3)):
-        item_location = QTableWidgetItem(location4)
+    for i, (location, mtbf_val, target) in enumerate(zip(locations, mtbf_values, targets)):
+        item_location = QTableWidgetItem(location)
         item_location.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
         item_location.setTextAlignment(Qt.AlignCenter)
-        table_widget4.setItem(i, 0, item_location)
+        table_widget.setItem(i, 0, item_location)
         item_percent = QTableWidgetItem(f"{mtbf_val:.2f}")
         item_percent.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
         item_percent.setTextAlignment(Qt.AlignCenter)
-        table_widget4.setItem(i, 1, item_percent)
-        item_target = QTableWidgetItem(str(target3))
+        table_widget.setItem(i, 1, item_percent)
+        item_target = QTableWidgetItem(str(target))
         item_target.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
         item_target.setTextAlignment(Qt.AlignCenter)
-        table_widget4.setItem(i, 2, item_target)
-    table_widget4.resizeRowsToContents()
-    table_widget4.resizeColumnsToContents()
-    table_widget4.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-    table_widget4.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-    widgets_layout4.addWidget(table_widget4)
+        table_widget.setItem(i, 2, item_target)
+    table_widget.resizeRowsToContents()
+    table_widget.resizeColumnsToContents()
+    table_widget.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+    table_widget.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    widget_layout.addWidget(table_widget)
     spacer = QSpacerItem(60, 20)
-    widgets_layout4.addItem(spacer)
-    fig3, ax3 = plt.subplots()
-    ax3.bar(locations4, mtbf_values)
-    ax3.set_title(f"MTTR in Mins - {file_name.text().split('.')[0]}")
-    ax3.axhline(y=float(line_edits[3]), color='r', linestyle='-')
-    ax3.yaxis.grid(True)
-    ax3.xaxis.grid(False)
-    max_value3 = max(mtbf_values) if mtbf_values else 0
-    ax3.set_ylim([0, floor(max_value3 + (float(line_edits[3]) + 5))])
-    for bar3 in ax3.patches:
-        ax3.text(bar3.get_x() + bar3.get_width() / 2, bar3.get_height(), round(bar3.get_height(), 2),
-                 ha='center', va='bottom')
-    fig3.tight_layout()
-    bar_chart_widget3 = FigureCanvas(fig3)
-    bar_chart_widget3.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-    widgets_layout4.addWidget(bar_chart_widget3)
-    scroll_layout1.addWidget(widgets_widget4)
-    widgets_widget5 = QWidget()
-    widgets_layout5 = QHBoxLayout(widgets_widget5)
-    widgets_layout5.setAlignment(Qt.AlignCenter)
-    lines = area_line_map.get("SHOX", [])
+    widget_layout.addItem(spacer)
+    fig, ax = plt.subplots()
+    ax.bar(locations, mtbf_values)
+    ax.set_title(f"MTTR in Mins - {month_title}")
+    ax.axhline(y=float(line_edits[14]), color='r', linestyle='-')
+    ax.yaxis.grid(True)
+    ax.xaxis.grid(False)
+    max_value = max(mtbf_values) if mtbf_values else 0
+    ax.set_ylim([0, floor(max_value + (float(line_edits[14]) + 5))])
+    for bar in ax.patches:
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(), round(bar.get_height(), 2),
+                ha='center', va='bottom')
+    fig.tight_layout()
+    plt.close(fig)
+    bar_chart_widget = FigureCanvas(fig)
+    bar_chart_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+    widget_layout.addWidget(bar_chart_widget)
+    return table_widget, bar_chart_widget, container_widget
+
+
+def get_bd_lines(month, area_line_map, required_area, dataframe, time_availability,
+                 line_edits, lines_stats_header, required_header):
+    container_widget = QWidget()
+    widget_layout = QHBoxLayout(container_widget)
+    widget_layout.setAlignment(Qt.AlignCenter)
     bd_percentages = {}
+    if required_area == ["OT CELL", "IT GRD"]:
+        lines = []
+        for location in required_area:
+            lines.extend(area_line_map.get(location, []))
+    else:
+        lines = area_line_map.get(required_area, [])
     for line in lines:
-        df_line = dataframe[dataframe['LINE'].str.contains(line, case=False)]
+        df_line = dataframe[(dataframe['LINE'].str.contains(line, case=False)) & (dataframe["MONTH"] == month)]
         line_total_sum = df_line[df_line['LINE'] == line]["TOTAL TIME"].sum()
         area = get_area_for_line(line)
         line_avail_time = time_availability.get(area, {}).get(line, 0)
-        line_bd_time_percentage = (line_total_sum / (line_avail_time * num_working_days)) * 100
+        num_days = get_line_edit(month, line_edits)
+        line_bd_time_percentage = (line_total_sum / (line_avail_time * num_days)) * 100
         bd_percentages[line] = line_bd_time_percentage
-    table_widget5 = QTableWidget(len(lines1_stats_header), 3)
-    table_widget5.setHorizontalHeaderLabels(
-        ["Line", f"% of B/D in {file_name.text().split('.')[0]}", "Target in %"])
-    table_widget5.setEditTriggers(QAbstractItemView.NoEditTriggers)
-    table_widget5.setFixedHeight(33 * (len(lines1_stats_header) + 1))
-    table_widget5.setFixedWidth(600)
-    table_widget5.setStyleSheet('''
-        QTableWidget { 
-            border: none; 
+    table_widget = QTableWidget(len(lines_stats_header), 3)
+    month_title = get_key(month_map, month)
+    table_widget = TitledTableWidget(f"% of B/D in {month_title}", table_widget)
+    table_widget.setHorizontalHeaderLabels(
+        ["Line", f"% of B/D", "Target in %"])
+    table_widget.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    table_widget.setFixedHeight(36 * (len(lines_stats_header) + 1))
+    table_widget.setFixedWidth(600)
+    table_widget.setStyleSheet('''
+        QTableWidget {
+            border: none;
         }
     ''')
-    targets4 = [line_edits[4] for _ in range(len(lines1_stats_header))]
-    line1_bd_percs = list(bd_percentages.values())
-    for i, (line1_header, line1_bd_perc, target4) in enumerate(zip(lines1_stats_header, line1_bd_percs, targets4)):
-        item_location = QTableWidgetItem(line1_header)
+    if required_area == "SHOX":
+        targets = [line_edits[15] for _ in range(len(lines_stats_header))]
+    elif required_area == "FFFA":
+        targets = [line_edits[16] for _ in range(len(lines_stats_header))]
+    else:
+        targets = [line_edits[17] for _ in range(len(lines_stats_header))]
+    line_bd_percs = list(bd_percentages.values())
+    for i, (line_header, line_bd_perc, target4) in enumerate(zip(lines_stats_header, line_bd_percs, targets)):
+        item_location = QTableWidgetItem(line_header)
         item_location.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
         item_location.setTextAlignment(Qt.AlignCenter)
-        table_widget5.setItem(i, 0, item_location)
-        item_percent = QTableWidgetItem(f"{line1_bd_perc:.2f}")
+        table_widget.setItem(i, 0, item_location)
+        item_percent = QTableWidgetItem(f"{line_bd_perc:.2f}")
         item_percent.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
         item_percent.setTextAlignment(Qt.AlignCenter)
-        table_widget5.setItem(i, 1, item_percent)
+        table_widget.setItem(i, 1, item_percent)
         item_target = QTableWidgetItem(str(target4))
         item_target.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
         item_target.setTextAlignment(Qt.AlignCenter)
-        table_widget5.setItem(i, 2, item_target)
-    table_widget5.resizeRowsToContents()
-    table_widget5.resizeColumnsToContents()
-    table_widget5.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-    table_widget5.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-    widgets_layout5.addWidget(table_widget5)
+        table_widget.setItem(i, 2, item_target)
+    table_widget.resizeRowsToContents()
+    table_widget.resizeColumnsToContents()
+    table_widget.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+    table_widget.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    widget_layout.addWidget(table_widget)
     spacer = QSpacerItem(60, 20)
-    widgets_layout5.addItem(spacer)
-    fig4, ax4 = plt.subplots()
-    ax4.bar(lines1_stats_header, line1_bd_percs)
-    ax4.set_title(f"SX Damper & FA - {file_name.text().split('.')[0]}")
-    ax4.axhline(y=float(line_edits[4]), color='r', linestyle='-')
-    ax4.yaxis.grid(True)
-    ax4.xaxis.grid(False)
-    ax4.set_xticks(range(len(lines1_stats_header)))
-    ax4.set_xticklabels(lines1_stats_header, rotation=45, ha='right')
-    max_value4 = max(line1_bd_percs) if line1_bd_percs else 0
-    ax4.set_ylim([0, max_value4 + (float(line_edits[4]) + 0.2)])
-    for bar4 in ax4.patches:
-        ax4.text(bar4.get_x() + bar4.get_width() / 2, bar4.get_height(), round(bar4.get_height(), 2),
-                 ha='center', va='bottom')
-    fig4.tight_layout()
-    bar_chart_widget4 = FigureCanvas(fig4)
-    bar_chart_widget4.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-    widgets_layout5.addWidget(bar_chart_widget4)
-    scroll_layout1.addWidget(widgets_widget5)
-    widgets_widget6 = QWidget()
-    widgets_layout6 = QHBoxLayout(widgets_widget6)
-    widgets_layout6.setAlignment(Qt.AlignCenter)
-    lines1 = area_line_map.get("FFFA", [])
-    bd_percentages1 = {}
-    for line1 in lines1:
-        df_line1 = dataframe[dataframe['LINE'].str.contains(line1, case=False)]
-        line_total_sum1 = df_line1[df_line1['LINE'] == line1]["TOTAL TIME"].sum()
-        area1 = get_area_for_line(line1)
-        line_avail_time1 = time_availability.get(area1, {}).get(line1, 0)
-        line_bd_time_percentage1 = (line_total_sum1 / (line_avail_time1 * num_working_days)) * 100
-        bd_percentages1[line1] = line_bd_time_percentage1
-    table_widget6 = QTableWidget(len(lines2_stats_header), 3)
-    table_widget6.setHorizontalHeaderLabels(
-        ["Line", f"% of B/D in {file_name.text().split('.')[0]}", "Target in %"])
-    table_widget6.setEditTriggers(QAbstractItemView.NoEditTriggers)
-    table_widget6.setFixedHeight(34 * len(lines2_stats_header))
-    table_widget6.setFixedWidth(600)
-    table_widget6.setStyleSheet('''
-        QTableWidget { 
-            border: none; 
-        }
-    ''')
-    targets5 = [line_edits[5] for _ in range(len(lines2_stats_header))]
-    line2_bd_percs = list(bd_percentages1.values())
-    for i, (line2_header, line2_bd_perc, target5) in enumerate(zip(lines2_stats_header, line2_bd_percs, targets5)):
-        item_location = QTableWidgetItem(line2_header)
-        item_location.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
-        item_location.setTextAlignment(Qt.AlignCenter)
-        table_widget6.setItem(i, 0, item_location)
-        item_percent = QTableWidgetItem(f"{line2_bd_perc:.2f}")
-        item_percent.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
-        item_percent.setTextAlignment(Qt.AlignCenter)
-        table_widget6.setItem(i, 1, item_percent)
+    widget_layout.addItem(spacer)
+    fig, ax = plt.subplots()
+    ax.bar(lines_stats_header, line_bd_percs)
+    ax.set_title(f"{required_header} - {month_title}")
+    if required_area == "SHOX":
+        ax.axhline(y=float(line_edits[15]), color='r', linestyle='-')
+    elif required_area == "FFFA":
+        ax.axhline(y=float(line_edits[16]), color='r', linestyle='-')
+    else:
+        ax.axhline(y=float(line_edits[17]), color='r', linestyle='-')
+    ax.yaxis.grid(True)
+    ax.xaxis.grid(False)
+    ax.set_xticks(range(len(lines_stats_header)))
+    ax.set_xticklabels(lines_stats_header, rotation=45, ha='right')
+    max_value = max(line_bd_percs) if line_bd_percs else 0
+    if required_area == "SHOX":
+        ax.set_ylim([0, max_value + (float(line_edits[15]) + 0.2)])
+    elif required_area == "FFFA":
+        ax.set_ylim([0, max_value + (float(line_edits[16]) + 0.2)])
+    else:
+        ax.set_ylim([0, max_value + (float(line_edits[17]) + 0.2)])
+    ax.set_ylim([0, max_value + (float(line_edits[16]) + 0.2)])
+    for bar in ax.patches:
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(), round(bar.get_height(), 2),
+                ha='center', va='bottom')
+    fig.tight_layout()
+    plt.close(fig)
+    bar_chart_widget = FigureCanvas(fig)
+    bar_chart_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+    widget_layout.addWidget(bar_chart_widget)
+    return table_widget, bar_chart_widget, container_widget
 
-        item_target = QTableWidgetItem(str(target5))
-        item_target.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
-        item_target.setTextAlignment(Qt.AlignCenter)
-        table_widget6.setItem(i, 2, item_target)
-    table_widget6.resizeRowsToContents()
-    table_widget6.resizeColumnsToContents()
-    table_widget6.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-    table_widget6.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-    widgets_layout6.addWidget(table_widget6)
-    spacer = QSpacerItem(60, 20)
-    widgets_layout6.addItem(spacer)
-    fig5, ax5 = plt.subplots()
-    ax5.bar(lines2_stats_header, line2_bd_percs)
-    ax5.set_title(f"Front Fork Final Assembly - {file_name.text().split('.')[0]}")
-    ax5.axhline(y=float(line_edits[5]), color='r', linestyle='-')
-    ax5.yaxis.grid(True)
-    ax5.xaxis.grid(False)
-    ax5.set_xticks(range(len(lines2_stats_header)))
-    ax5.set_xticklabels(lines2_stats_header, rotation=45, ha='right')
-    max_value5 = max(line2_bd_percs) if line2_bd_percs else 0
-    ax5.set_ylim([0, max_value5 + (float(line_edits[5]) + 0.2)])
-    for bar5 in ax5.patches:
-        ax5.text(bar5.get_x() + bar5.get_width() / 2, bar5.get_height(), round(bar5.get_height(), 2),
-                 ha='center', va='bottom')
-    fig5.tight_layout()
-    bar_chart_widget5 = FigureCanvas(fig5)
-    bar_chart_widget5.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)  # Set vertical policy to Fixed
-    widgets_layout6.addWidget(bar_chart_widget5)
-    scroll_layout1.addWidget(widgets_widget6)
-    widgets_widget7 = QWidget()
-    widgets_layout7 = QHBoxLayout(widgets_widget7)
-    widgets_layout7.setAlignment(Qt.AlignCenter)
-    lines2 = []
-    for location in ["OT CELL", "IT GRD"]:
-        lines2.extend(area_line_map.get(location, []))
-    bd_percentages2 = {}
-    for line2 in lines2:
-        df_line2 = dataframe[dataframe['LINE'].str.contains(line2, case=False)]
-        line_total_sum2 = df_line2[df_line2['LINE'] == line2]["TOTAL TIME"].sum()
-        area2 = get_area_for_line(line2)
-        line_avail_time2 = time_availability.get(area2, {}).get(line2, 0)
-        line_bd_time_percentage2 = (line_total_sum2 / (line_avail_time2 * num_working_days)) * 100
-        bd_percentages2[line2] = line_bd_time_percentage2
-    table_widget7 = QTableWidget(len(lines34_stats_header), 3)
-    table_widget7.setHorizontalHeaderLabels(
-        ["Line", f"% of B/D in {file_name.text().split('.')[0]}", "Target in %"])
-    table_widget7.setEditTriggers(QAbstractItemView.NoEditTriggers)
-    table_widget7.setFixedHeight(33 * len(lines34_stats_header))
-    table_widget7.setFixedWidth(600)
-    table_widget7.setStyleSheet('''
-        QTableWidget { 
-            border: none; 
+
+def get_bd_machines(month, dataframe, time_availability_machines, line_edits, required_header,
+                    lines_machines_problems, required_areas=None):
+    container_widget = QWidget()
+    widget_layout = QHBoxLayout(container_widget)
+    widget_layout.setAlignment(Qt.AlignCenter)
+    machines = {}
+    bd_percentages = {}
+    num_days = get_line_edit(month, line_edits)
+    if required_areas == ["OT CELL", "IT GRD"]:
+        for area in required_areas:
+            with connect_to_database() as conn:
+                machines_and_problems = extract_lines_machines_problems_of_area(conn, area)
+                for line, machine, problem in machines_and_problems:
+                    df_machine = dataframe[(dataframe['MACHINE'] == machine) & (dataframe["MONTH"] == month)]
+                    machine_total_sum = df_machine["TOTAL TIME"].sum()
+                    area = get_area_for_machine(machine)
+                    machine_avail_time = time_availability_machines.get(area, {}).get(machine, 0)
+                    if machine_avail_time * num_days != 0:
+                        machine_bd_time_percentage = (machine_total_sum / (machine_avail_time * num_days)) * 100
+                        bd_percentages[machine] = machine_bd_time_percentage
+                    else:
+                        bd_percentages[machine] = np.nan
+                    if machine in machines:
+                        if line not in machines[machine]:  # Ensure unique lines for each machine
+                            machines[machine].append(line)
+                    else:
+                        machines[machine] = [line]
+        sorted_machines = sorted(machines.keys(), key=lambda x: bd_percentages.get(x, 0), reverse=True)
+    else:
+        for line, machine, problem in lines_machines_problems:
+            df_machine = dataframe[(dataframe['MACHINE'] == machine) & (dataframe["MONTH"] == month)]
+            machine_total_sum = df_machine["TOTAL TIME"].sum()
+            area = get_area_for_machine(machine)
+            machine_avail_time = time_availability_machines.get(area, {}).get(machine, 0)
+            if machine_avail_time * num_days != 0:
+                machine_bd_time_percentage = (machine_total_sum / (machine_avail_time * num_days)) * 100
+                bd_percentages[machine] = machine_bd_time_percentage
+            else:
+                bd_percentages[machine] = np.nan
+            if machine in machines:
+                if line not in machines[machine]:  # Ensure unique lines for each machine
+                    machines[machine].append(line)
+            else:
+                machines[machine] = [line]
+        sorted_machines = sorted(machines.keys(), key=lambda x: bd_percentages[x], reverse=True)
+    table_widget = QTableWidget(len(sorted_machines), 4)  # Added one more column for Line
+    month_title = get_key(month_map, month)
+    table_widget = TitledTableWidget(f"% of B/D in {month_title}", table_widget)
+    table_widget.setHorizontalHeaderLabels(
+        ["Lines", "Machine", f"% of B/D", "Target in %"])  # Added "Lines" header
+    table_widget.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    if len(sorted_machines) < 5:
+        table_widget.setFixedHeight(73 * len(sorted_machines))
+    elif len(sorted_machines) < 25:
+        table_widget.setFixedHeight(43 * len(sorted_machines))
+    else:
+        table_widget.setFixedHeight(35 * len(sorted_machines))
+    table_widget.setFixedWidth(1250)
+    table_widget.setStyleSheet('''
+        QTableWidget {
+            border: none;
         }
     ''')
-    targets6 = [line_edits[6] for _ in range(len(lines34_stats_header))]
-    line34_bd_percs = list(bd_percentages2.values())
-    for i, (line34_header, line34_bd_perc, target6) in enumerate(zip(lines34_stats_header, line34_bd_percs, targets6)):
-        item_location = QTableWidgetItem(line34_header)
-        item_location.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
-        item_location.setTextAlignment(Qt.AlignCenter)
-        table_widget7.setItem(i, 0, item_location)
-        item_percent = QTableWidgetItem(f"{line34_bd_perc:.2f}")
+    if required_header == "SX Damper & FA":
+        targets = [line_edits[18] for _ in range(len(sorted_machines))]
+    elif required_header == "Front Fork Final Assembly":
+        targets = [line_edits[19] for _ in range(len(sorted_machines))]
+    else:
+        targets = [line_edits[20] for _ in range(len(sorted_machines))]
+    machine_bd_percs = [bd_percentages[machine] for machine in sorted_machines]  # Extracting machine from tuple
+    for i, (machine, machine_bd_perc, target) in enumerate(zip(sorted_machines, machine_bd_percs, targets)):
+        unique_lines = ", ".join(sorted(machines[machine]))  # Sort lines for consistency
+        item_lines = QTableWidgetItem(unique_lines)
+        item_lines.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+        item_lines.setTextAlignment(Qt.AlignCenter)
+        table_widget.setItem(i, 0, item_lines)  # Set item for Lines
+        item_machine = QTableWidgetItem(machine)
+        item_machine.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+        item_machine.setTextAlignment(Qt.AlignCenter)
+        table_widget.setItem(i, 1, item_machine)  # Changed column index for machine
+        item_percent = QTableWidgetItem(f"{machine_bd_perc:.2f}")
         item_percent.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
         item_percent.setTextAlignment(Qt.AlignCenter)
-        table_widget7.setItem(i, 1, item_percent)
-        item_target = QTableWidgetItem(str(target6))
+        table_widget.setItem(i, 2, item_percent)  # Changed column index for % of B/D
+        item_target = QTableWidgetItem(str(target))
         item_target.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled)
         item_target.setTextAlignment(Qt.AlignCenter)
-        table_widget7.setItem(i, 2, item_target)
-    table_widget7.resizeRowsToContents()
-    table_widget7.resizeColumnsToContents()
-    table_widget7.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-    table_widget7.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-    widgets_layout7.addWidget(table_widget7)
-    spacer = QSpacerItem(60, 20)
-    widgets_layout7.addItem(spacer)
-    fig6, ax6 = plt.subplots()
-    ax6.bar(lines34_stats_header, line34_bd_percs)
-    ax6.set_title(f"OT Cell & IT Grinding - {file_name.text().split('.')[0]}")
-    ax6.axhline(y=float(line_edits[6]), color='r', linestyle='-')
-    ax6.yaxis.grid(True)
-    ax6.xaxis.grid(False)
-    ax6.set_xticks(range(len(lines34_stats_header)))
-    ax6.set_xticklabels(lines34_stats_header, rotation=45, ha='right')
-    max_value6 = max(line34_bd_percs) if line34_bd_percs else 0
-    ax6.set_ylim([0, max_value6 + (float(line_edits[6]) + 0.2)])
-    for bar6 in ax6.patches:
-        ax6.text(bar6.get_x() + bar6.get_width() / 2, bar6.get_height(), round(bar6.get_height(), 2),
-                 ha='center', va='bottom')
-    fig6.tight_layout()
-    bar_chart_widget6 = FigureCanvas(fig6)
-    bar_chart_widget6.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-    widgets_layout7.addWidget(bar_chart_widget6)
-    scroll_layout1.addWidget(widgets_widget7)
-    scroll_area.setWidget(scroll_content_widget1)
-    tables.extend(
-        [table_widget1, table_widget2, table_widget3, table_widget4, table_widget5, table_widget6, table_widget7])
-    barcharts.extend([bar_chart_widget1, bar_chart_widget2, bar_chart_widget3,
-                      bar_chart_widget4, bar_chart_widget5, bar_chart_widget6])
+        table_widget.setItem(i, 3, item_target)  # Changed column index for Target
+    table_widget.resizeRowsToContents()
+    table_widget.resizeColumnsToContents()
+    table_widget.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+    table_widget.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    widget_layout.addWidget(table_widget)
+    machine_bd_percs_filtered = [val for val in machine_bd_percs if not np.isnan(val) and not np.isinf(val)]
+    fig, ax = plt.subplots(figsize=(10, 8))
+    ax.barh(list(reversed(sorted_machines)), list(reversed(machine_bd_percs)))  # Using labels with both machine and unique lines
+    ax.set_title(f"{required_header} - {month_title}")
+    if required_header == "SX Damper & FA":
+        ax.axvline(x=float(line_edits[18]), color='r', linestyle='-')
+    elif required_header == "Front Fork Final Assembly":
+        ax.axvline(x=float(line_edits[19]), color='r', linestyle='-')
+    else:
+        ax.axvline(x=float(line_edits[20]), color='r', linestyle='-')
+    ax.xaxis.grid(True)
+    ax.yaxis.grid(False)
+    ax.set_yticks(range(len(sorted_machines)))
+    ax.set_yticklabels(list(reversed(sorted_machines)))  # Using labels with both machine and unique lines
+    if required_header == "SX Damper & FA":
+        if machine_bd_percs_filtered:
+            max_value = max(machine_bd_percs_filtered)
+            ax.set_xlim([0, max_value + (float(line_edits[18]) + 0.2)])
+        else:
+            ax.set_xlim([0, float(line_edits[18]) + 1])
+    elif required_header == "Front Fork Final Assembly":
+        if machine_bd_percs_filtered:
+            max_value = max(machine_bd_percs_filtered)
+            ax.set_xlim([0, max_value + (float(line_edits[19]) + 0.2)])
+        else:
+            ax.set_xlim([0, float(line_edits[19]) + 1])
+    else:
+        if machine_bd_percs_filtered:
+            max_value = max(machine_bd_percs_filtered)
+            ax.set_xlim([0, max_value + (float(line_edits[20]) + 0.2)])
+        else:
+            ax.set_xlim([0, float(line_edits[20]) + 1])
+    for bar in ax.patches:
+        ax.text(bar.get_width(), bar.get_y() + bar.get_height() / 2, round(bar.get_width(), 2),
+                va='center', ha='left')
+    fig.tight_layout()
+    plt.close(fig)
+    bar_chart_widget = FigureCanvas(fig)
+    bar_chart_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+    widget_layout.addWidget(bar_chart_widget)
+    return table_widget, bar_chart_widget, container_widget
+
+
+def display_statistics(tree_widget_left, scroll_area):
+    global table_widget, bar_chart_widget, container_widget, line_edits, current_month
+    del tables[:]
+    del barcharts[:]
+    df = tab1Utils.df
+    json_file_path = os.path.join(os.path.dirname(current_dir), 'statistic_values.json')
+    if json_file_path:
+        line_edits_from_json = load_line_edit_values(json_file_path)
+        if line_edits_from_json:
+            line_edits = line_edits_from_json
+    with connect_to_database() as conn:
+        area_stats_header = fetch_values(conn, "SELECT AONAME FROM AREA")
+        lines1_stats_header = fetch_lonames_for_ano(conn, 1)
+        lines2_stats_header = fetch_lonames_for_ano(conn, 2)
+        lines34_stats_header = fetch_lonames_for_ano(conn, 3) + fetch_lonames_for_ano(conn, 4)
+        area_line_map, line_machine_map, machine_problem_map, problem_caction_map = create_full_map(conn)
+        time_availability_lines = create_time_availability_lines(conn)
+        time_availability_machines = create_time_availability_machines(conn)
+        lines_machines_problems_shox = extract_lines_machines_problems_of_area(conn, 'SHOX')
+        lines_machines_problems_fffa = extract_lines_machines_problems_of_area(conn, 'FFFA')
+        lines_machines_problems_otcell = extract_lines_machines_problems_of_area(conn, 'OT CELL')
+        lines_machines_problems_itgrd = extract_lines_machines_problems_of_area(conn, 'IT GRD')
+        conn.commit()
+    scroll_content_widget = QWidget()
+    scroll_layout = QVBoxLayout(scroll_content_widget)
+    scroll_layout.setAlignment(Qt.AlignCenter)
+    selected_items = tree_widget_left.selectedItems()
+    if not selected_items:
+        tree_widget_left.setToolTip("")
+        scrollAreaContent = scroll_area.takeWidget()
+        if scrollAreaContent:
+            scrollAreaContent.deleteLater()
+        return
+    else:
+        tooltip_text = "\n".join(item.text(0) for item in selected_items)
+        tree_widget_left.setToolTip(tooltip_text)
+
+    for item in selected_items:
+        parent_item = item.parent()
+        if parent_item:
+            parent_text = parent_item.text(0)
+            if parent_text in month_map.keys():
+                current_month = month_map[parent_text]
+                child_text = item.text(0)
+                if child_text in stat_headers:
+                    if current_month not in df["MONTH"].values:
+                        current_month = 0
+                        return
+                    if (child_text == stat_headers[1] or child_text == stat_headers[2]
+                            or child_text == stat_headers[3] or child_text == stat_headers[4]
+                            or child_text == stat_headers[4]):
+                        table_widget, _, container_widget = run_function(current_month, child_text, df,
+                                                                         line_edits, area_stats_header,
+                                                                         lines1_stats_header,
+                                                                         lines2_stats_header,
+                                                                         lines34_stats_header, area_line_map,
+                                                                         time_availability_lines,
+                                                                         time_availability_machines,
+                                                                         lines_machines_problems_shox,
+                                                                         lines_machines_problems_fffa,
+                                                                         lines_machines_problems_otcell,
+                                                                         lines_machines_problems_itgrd)
+                        tables.append(table_widget)
+                    else:
+                        table_widget, bar_chart_widget, container_widget = run_function(current_month, child_text, df,
+                                                                                        line_edits, area_stats_header,
+                                                                                        lines1_stats_header,
+                                                                                        lines2_stats_header,
+                                                                                        lines34_stats_header,
+                                                                                        area_line_map,
+                                                                                        time_availability_lines,
+                                                                                        time_availability_machines,
+                                                                                        lines_machines_problems_shox,
+                                                                                        lines_machines_problems_fffa,
+                                                                                        lines_machines_problems_otcell,
+                                                                                        lines_machines_problems_itgrd)
+
+                        tables.append(table_widget)
+                        barcharts.append(bar_chart_widget)
+                    scroll_layout.addWidget(container_widget)
+                    scroll_area.setWidget(scroll_content_widget)
+
+
+def run_function(month, stat_header, dataframe, line_edits, area_stats_header, lines1_stats_header,
+                 lines2_stats_header, lines34_stats_header, area_line_map, time_availability_lines,
+                 time_availability_machines, lines_machines_problems_shox, lines_machines_problems_fffa,
+                 lines_machines_problems_otcell, lines_machines_problems_itgrd):
+    global table_widget, bar_chart_widget, container_widget
+    if stat_header == stat_headers[0]:
+        table_widget, bar_chart_widget, container_widget = get_bd_locations(month, area_line_map, dataframe,
+                                                                            time_availability_lines, line_edits,
+                                                                            area_stats_header)
+    elif stat_header == stat_headers[1]:
+        table_widget, container_widget = get_occurrences_locations(month, area_line_map, dataframe, line_edits,
+                                                                   time_availability_lines, area_stats_header)
+    elif stat_header == stat_headers[2]:
+        table_widget, container_widget = get_occurrences_machines_problems(lines_machines_problems_shox, dataframe,
+                                                                           "SHOX", month)
+    elif stat_header == stat_headers[3]:
+        table_widget, container_widget = get_occurrences_machines_problems(lines_machines_problems_fffa, dataframe,
+                                                                           "FFFA", month)
+    elif stat_header == stat_headers[4]:
+        table_widget, container_widget = get_occurrences_machines_problems(lines_machines_problems_otcell, dataframe,
+                                                                           "OT CELL", month)
+    elif stat_header == stat_headers[5]:
+        table_widget, container_widget = get_occurrences_machines_problems(lines_machines_problems_itgrd, dataframe,
+                                                                           "IT GRD", month)
+    elif stat_header == stat_headers[6]:
+        table_widget, bar_chart_widget, container_widget = get_mtbf_locations(month, area_line_map, dataframe,
+                                                                              time_availability_lines, line_edits,
+                                                                              area_stats_header)
+    elif stat_header == stat_headers[7]:
+        table_widget, bar_chart_widget, container_widget = get_mttr_locations(month, area_line_map, dataframe,
+                                                                              time_availability_lines, line_edits,
+                                                                              area_stats_header)
+    elif stat_header == stat_headers[8]:
+        table_widget, bar_chart_widget, container_widget = get_bd_lines(month, area_line_map, "SHOX", dataframe,
+                                                                        time_availability_lines, line_edits,
+                                                                        lines1_stats_header, "SX Damper & FA")
+    elif stat_header == stat_headers[9]:
+        table_widget, bar_chart_widget, container_widget = get_bd_lines(month, area_line_map, "FFFA", dataframe,
+                                                                        time_availability_lines, line_edits,
+                                                                        lines2_stats_header,
+                                                                        "Front Fork Final Assembly")
+    elif stat_header == stat_headers[10]:
+        table_widget, bar_chart_widget, container_widget = get_bd_lines(month, area_line_map,
+                                                                        ["OT CELL", "IT GRD"], dataframe,
+                                                                        time_availability_lines, line_edits,
+                                                                        lines34_stats_header, "OT Cell & IT Grinding")
+    elif stat_header == stat_headers[11]:
+        table_widget, bar_chart_widget, container_widget = get_bd_machines(month, dataframe, time_availability_machines,
+                                                                           line_edits, "SX Damper & FA",
+                                                                           lines_machines_problems_shox)
+    elif stat_header == stat_headers[12]:
+        table_widget, bar_chart_widget, container_widget = get_bd_machines(month, dataframe, time_availability_machines,
+                                                                           line_edits, "Front Fork Final Assembly",
+                                                                           lines_machines_problems_fffa)
+    elif stat_header == stat_headers[13]:
+        table_widget, bar_chart_widget, container_widget = get_bd_machines(month, dataframe, time_availability_machines,
+                                                                           line_edits, "OT Cell & IT Grinding",
+                                                                           lines_machines_problems_shox,
+                                                                           ["OT CELL", "IT GRD"])
+
+    return table_widget, bar_chart_widget, container_widget
